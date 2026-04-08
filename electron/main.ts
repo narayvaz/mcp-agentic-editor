@@ -200,9 +200,8 @@ async function startEmbeddedServer(): Promise<string> {
 }
 
 async function createWindow() {
-  const bundledPreload = path.join(__dirname, 'preload.js');
-  const fallbackPreload = path.join(__dirname, 'preload.ts');
-  const preloadPath = fs.existsSync(bundledPreload) ? bundledPreload : fallbackPreload;
+  const preloadCandidates = [path.join(__dirname, 'preload.cjs'), path.join(__dirname, 'preload.js'), path.join(__dirname, 'preload.ts')];
+  const preloadPath = preloadCandidates.find((candidate) => fs.existsSync(candidate));
 
   const mainWindow = new BrowserWindow({
     width: 1200,
@@ -211,7 +210,7 @@ async function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      preload: preloadPath,
+      ...(preloadPath ? { preload: preloadPath } : {}),
     },
   });
 
