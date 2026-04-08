@@ -1,0 +1,278 @@
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Fraunces:opsz,wght@9..144,500;9..144,700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Sora", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-serif: "Fraunces", serif;
+}
+
+:root {
+  --liquid-bg-a: #eaf2ff;
+  --liquid-bg-b: #f6f9ff;
+  --liquid-bg-c: #edf8ff;
+  --liquid-ink: #0f172a;
+  --liquid-subtle-ink: #465168;
+  --liquid-soft-ink: #6c7891;
+  --liquid-surface: rgba(255, 255, 255, 0.54);
+  --liquid-surface-strong: rgba(255, 255, 255, 0.72);
+  --liquid-stroke: rgba(255, 255, 255, 0.68);
+  --liquid-shadow: 0 18px 44px rgba(56, 88, 151, 0.16);
+  --liquid-blur: 22px;
+  --liquid-glow: rgba(255, 255, 255, 0.9);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --liquid-bg-a: #17243a;
+    --liquid-bg-b: #1e2e47;
+    --liquid-bg-c: #1b3550;
+    --liquid-ink: #f4f8ff;
+    --liquid-subtle-ink: #dbe5f8;
+    --liquid-soft-ink: #bcc9df;
+    --liquid-surface: rgba(40, 56, 86, 0.68);
+    --liquid-surface-strong: rgba(44, 63, 97, 0.82);
+    --liquid-stroke: rgba(198, 216, 255, 0.34);
+    --liquid-shadow: 0 20px 44px rgba(2, 8, 20, 0.46);
+    --liquid-glow: rgba(240, 247, 255, 0.36);
+  }
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    color: var(--liquid-ink);
+    background:
+      radial-gradient(1200px 520px at 6% -10%, color-mix(in srgb, #5c8dff 14%, transparent), transparent 62%),
+      radial-gradient(900px 420px at 98% 0%, color-mix(in srgb, #3de2ff 12%, transparent), transparent 60%),
+      linear-gradient(145deg, var(--liquid-bg-a), var(--liquid-bg-b) 54%, var(--liquid-bg-c));
+    @apply antialiased;
+  }
+
+  .liquid-page {
+    position: relative;
+    overflow: hidden;
+    isolation: isolate;
+  }
+
+  .liquid-page::before,
+  .liquid-page::after {
+    content: "";
+    position: absolute;
+    inset: auto;
+    z-index: 0;
+    pointer-events: none;
+    filter: blur(50px);
+    opacity: 0.8;
+    animation: liquidFloat 16s ease-in-out infinite;
+  }
+
+  .liquid-page::before {
+    width: 30rem;
+    height: 30rem;
+    top: -9rem;
+    left: -8rem;
+    background: radial-gradient(circle, rgba(117, 162, 255, 0.42), transparent 64%);
+  }
+
+  .liquid-page::after {
+    width: 26rem;
+    height: 26rem;
+    right: -7rem;
+    bottom: -9rem;
+    background: radial-gradient(circle, rgba(84, 226, 255, 0.28), transparent 64%);
+    animation-delay: -8s;
+  }
+}
+
+@layer components {
+  .liquid-surface {
+    background: var(--liquid-surface);
+    backdrop-filter: saturate(180%) blur(var(--liquid-blur));
+    -webkit-backdrop-filter: saturate(180%) blur(var(--liquid-blur));
+    border: 1px solid var(--liquid-stroke);
+    box-shadow: var(--liquid-shadow);
+  }
+
+  .liquid-surface-strong {
+    background: var(--liquid-surface-strong);
+    backdrop-filter: saturate(180%) blur(calc(var(--liquid-blur) + 4px));
+    -webkit-backdrop-filter: saturate(180%) blur(calc(var(--liquid-blur) + 4px));
+    border: 1px solid var(--liquid-stroke);
+    box-shadow: var(--liquid-shadow);
+  }
+
+  .liquid-pill {
+    background: linear-gradient(140deg, rgba(255, 255, 255, 0.62), rgba(255, 255, 255, 0.38));
+    border: 1px solid color-mix(in srgb, var(--liquid-stroke) 82%, #b6cbff);
+    box-shadow: 0 12px 28px rgba(76, 109, 180, 0.16), inset 0 1px 0 var(--liquid-glow);
+    backdrop-filter: blur(16px) saturate(170%);
+    -webkit-backdrop-filter: blur(16px) saturate(170%);
+  }
+
+  .liquid-accent {
+    background: linear-gradient(125deg, #5a8eff, #3db6ff);
+    box-shadow: 0 14px 28px rgba(65, 128, 255, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.24);
+  }
+
+  .liquid-input {
+    width: 100%;
+    color: var(--liquid-ink);
+    background: color-mix(in srgb, var(--liquid-surface-strong) 86%, white 14%);
+    border: 1px solid color-mix(in srgb, var(--liquid-stroke) 82%, #c8d9ff);
+    border-radius: 0.75rem;
+    outline: none;
+    transition: border-color 150ms ease, box-shadow 150ms ease, background-color 150ms ease;
+  }
+
+  .liquid-input::placeholder {
+    color: var(--liquid-soft-ink);
+  }
+
+  .liquid-input:focus {
+    border-color: color-mix(in srgb, #6fa7ff 65%, var(--liquid-stroke));
+    box-shadow: 0 0 0 3px rgba(95, 160, 255, 0.2);
+  }
+
+  .masked-text {
+    -webkit-text-security: disc;
+    font-family: var(--font-sans);
+  }
+
+  .liquid-note-success {
+    background: color-mix(in srgb, #4ade80 14%, var(--liquid-surface-strong));
+    border: 1px solid color-mix(in srgb, #4ade80 40%, var(--liquid-stroke));
+    color: color-mix(in srgb, var(--liquid-ink) 84%, #052e16);
+  }
+
+  .liquid-note-error {
+    background: color-mix(in srgb, #fb7185 14%, var(--liquid-surface-strong));
+    border: 1px solid color-mix(in srgb, #fb7185 44%, var(--liquid-stroke));
+    color: color-mix(in srgb, var(--liquid-ink) 84%, #450a0a);
+  }
+
+  .liquid-note-warn {
+    background: color-mix(in srgb, #fbbf24 14%, var(--liquid-surface-strong));
+    border: 1px solid color-mix(in srgb, #fbbf24 40%, var(--liquid-stroke));
+    color: color-mix(in srgb, var(--liquid-ink) 86%, #451a03);
+  }
+
+  .readable-copy {
+    color: var(--liquid-subtle-ink);
+  }
+
+  .liquid-title {
+    color: var(--liquid-ink);
+  }
+
+  .liquid-muted {
+    color: var(--liquid-subtle-ink);
+  }
+
+  .liquid-soft {
+    color: var(--liquid-soft-ink);
+  }
+
+  .bg-white.rounded-2xl,
+  .bg-white.rounded-xl,
+  .bg-white.rounded-lg,
+  header.bg-white,
+  aside.bg-white {
+    background: var(--liquid-surface) !important;
+    border-color: var(--liquid-stroke) !important;
+    backdrop-filter: saturate(170%) blur(var(--liquid-blur));
+    -webkit-backdrop-filter: saturate(170%) blur(var(--liquid-blur));
+    box-shadow: var(--liquid-shadow);
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .liquid-pill {
+    background: linear-gradient(140deg, rgba(255, 255, 255, 0.2), rgba(199, 221, 255, 0.1));
+    border-color: rgba(206, 223, 255, 0.42);
+    box-shadow: 0 14px 30px rgba(4, 11, 24, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  }
+
+  .liquid-accent {
+    background: linear-gradient(125deg, #68a2ff, #44d2ff);
+    box-shadow: 0 14px 28px rgba(54, 139, 255, 0.46), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  }
+
+  .liquid-input {
+    background: rgba(225, 236, 255, 0.12);
+    border-color: rgba(205, 223, 255, 0.45);
+  }
+
+  .liquid-input:focus {
+    border-color: rgba(118, 176, 255, 0.88);
+    box-shadow: 0 0 0 3px rgba(72, 141, 255, 0.26);
+  }
+
+  .liquid-note-success,
+  .liquid-note-error,
+  .liquid-note-warn {
+    color: #f4f8ff;
+  }
+
+  select.liquid-input option {
+    color: #0f172a;
+    background: #eff5ff;
+  }
+
+  .text-gray-900,
+  .text-slate-900,
+  .text-gray-800,
+  .text-slate-800,
+  .text-slate-700,
+  .text-gray-700 {
+    color: var(--liquid-ink) !important;
+  }
+
+  .text-gray-600,
+  .text-slate-600,
+  .text-gray-500,
+  .text-slate-500,
+  .text-gray-400,
+  .text-slate-400 {
+    color: var(--liquid-subtle-ink) !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .liquid-page::before,
+  .liquid-page::after {
+    animation: none !important;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .liquid-surface,
+  .liquid-surface-strong,
+  .liquid-pill,
+  .bg-white.rounded-2xl,
+  .bg-white.rounded-xl,
+  .bg-white.rounded-lg,
+  header.bg-white,
+  aside.bg-white {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    background: rgba(255, 255, 255, 0.95) !important;
+  }
+}
+
+@keyframes liquidFloat {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(0, 16px, 0) scale(1.04);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
