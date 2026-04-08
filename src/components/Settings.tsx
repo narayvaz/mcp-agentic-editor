@@ -916,6 +916,8 @@ export default function Settings() {
             <AlertCircle size={16} className="text-amber-500 shrink-0 mt-0.5" />
             <p className="text-sm liquid-title leading-relaxed">
               Updater controls are available only in the packaged desktop app (.dmg install), not in browser preview/dev mode.
+              If this appears inside the installed app, quit and reopen Azat Studio from <code>/Applications</code> and reinstall
+              the latest DMG if needed.
             </p>
           </div>
         )}
