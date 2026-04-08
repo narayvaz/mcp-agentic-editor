@@ -1,11 +1,11 @@
 {
   "name": "mcp-agentic-editor",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "main": "dist-electron/main.js",
   "author": "Azat Television",
-  "description": "MCP Agentic Editor - Native Desktop App",
+  "description": "Azat Studio - Native research and automation desktop app",
   "scripts": {
     "dev": "tsx server.ts",
     "start": "NODE_ENV=production tsx server.ts",
@@ -19,9 +19,9 @@
     "electron:build": "npm run build && npm run build:server && npm run build:electron && electron-builder"
   },
   "build": {
-    "appId": "com.mcp.editor",
-    "productName": "MCP Agentic Editor",
-    "artifactName": "MCP-Agentic-Editor-${version}-${arch}.${ext}",
+    "appId": "com.azat.studio",
+    "productName": "Azat Studio",
+    "artifactName": "Azat-Studio-${version}-${arch}.${ext}",
     "directories": {
       "output": "release"
     },

@@ -21,7 +21,7 @@ export default function ToolGenerator() {
     if (!newToolPrompt.trim()) return;
     setIsGenerating(true);
     
-    const prompt = `Create a new tool for our MCP Agentic Editor. 
+    const prompt = `Create a new tool for our Azat Studio app. 
     The user wants: ${newToolPrompt}
     
     Return a JSON object with:

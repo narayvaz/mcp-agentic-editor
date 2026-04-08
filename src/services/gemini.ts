@@ -6,6 +6,13 @@ export interface AgentPart {
   };
 }
 
+export interface AgentResearchOptions {
+  web?: boolean;
+  scholar?: boolean;
+  notebook?: boolean;
+  articleMode?: boolean;
+}
+
 interface AgentResponse {
   text?: string;
   error?: string;
@@ -13,7 +20,12 @@ interface AgentResponse {
   warning?: string;
 }
 
-export const getAgentResponse = async (prompt: string, context?: string, parts: AgentPart[] = []) => {
+export const getAgentResponse = async (
+  prompt: string,
+  context?: string,
+  parts: AgentPart[] = [],
+  research?: AgentResearchOptions,
+) => {
   try {
     const response = await fetch("/api/agent", {
       method: "POST",
@@ -24,6 +36,7 @@ export const getAgentResponse = async (prompt: string, context?: string, parts: 
         prompt,
         context,
         parts,
+        research,
       }),
     });
 

@@ -1,10 +1,13 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
-import { autoUpdater } from 'electron-updater';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as net from 'node:net';
 import * as path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const { autoUpdater } = require('electron-updater') as typeof import('electron-updater');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -200,7 +203,7 @@ async function createWindow() {
   const mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
-    title: 'MCP Agentic Editor',
+    title: 'Azat Studio',
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,

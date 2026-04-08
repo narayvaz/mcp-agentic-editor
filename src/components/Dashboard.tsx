@@ -77,7 +77,7 @@ export default function Dashboard() {
   return (
     <div className="space-y-6">
       <header>
-        <h2 className="text-2xl font-serif font-bold liquid-title">Site Overview</h2>
+        <h2 className="text-2xl font-serif font-bold liquid-title">Studio Overview</h2>
         <p className="readable-copy text-sm">Live metrics from your configured data sources.</p>
       </header>
 
@@ -125,17 +125,17 @@ export default function Dashboard() {
               <AreaChart data={stats?.history || []}>
                 <defs>
                   <linearGradient id="colorClicks" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#2563eb" stopOpacity={0.1}/>
-                    <stop offset="95%" stopColor="#2563eb" stopOpacity={0}/>
+                    <stop offset="5%" stopColor="#1cc8c3" stopOpacity={0.16}/>
+                    <stop offset="95%" stopColor="#1cc8c3" stopOpacity={0}/>
                   </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(140, 168, 222, 0.32)" />
-                <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#7d8cb0'}} />
-                <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#7d8cb0'}} />
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(90, 157, 166, 0.28)" />
+                <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#5a7280'}} />
+                <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#5a7280'}} />
                 <Tooltip 
-                  contentStyle={{ borderRadius: '12px', border: '1px solid rgba(255,255,255,0.45)', boxShadow: '0 16px 30px rgba(57, 84, 142, 0.2)', background: 'rgba(255,255,255,0.72)', backdropFilter: 'blur(16px)' }}
+                  contentStyle={{ borderRadius: '12px', border: '1px solid rgba(245,255,253,0.6)', boxShadow: '0 16px 30px rgba(35, 95, 109, 0.2)', background: 'rgba(247,255,253,0.74)', backdropFilter: 'blur(16px)' }}
                 />
-                <Area type="monotone" dataKey="clicks" stroke="#2563eb" fillOpacity={1} fill="url(#colorClicks)" strokeWidth={2} />
+                <Area type="monotone" dataKey="clicks" stroke="#1cc8c3" fillOpacity={1} fill="url(#colorClicks)" strokeWidth={2} />
               </AreaChart>
             </ResponsiveContainer>
           </div>

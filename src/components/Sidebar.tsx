@@ -28,7 +28,7 @@ export default function Sidebar({ activeTab, setActiveTab, isOpen, setIsOpen }: 
     { id: 'seo', label: 'SEO & Analytics', icon: Search },
     { id: 'wordpress', label: 'WordPress Health', icon: Globe },
     { id: 'tools', label: 'Tool Generator', icon: Code2 },
-    { id: 'rules', label: 'MCP Rules', icon: ScrollText },
+    { id: 'rules', label: 'MCP Control', icon: ScrollText },
     { id: 'automations', label: 'Automations', icon: Zap },
     { id: 'desktop', label: 'Desktop App', icon: Monitor },
     { id: 'settings', label: 'Settings', icon: Settings },
@@ -51,10 +51,13 @@ export default function Sidebar({ activeTab, setActiveTab, isOpen, setIsOpen }: 
         <div className="flex flex-col h-full">
           <div className="p-6 flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="w-8 h-8 liquid-accent rounded-lg flex items-center justify-center text-white font-bold">
-                M
+              <div className="w-9 h-9 azat-logo flex items-center justify-center font-bold">
+                <span className="azat-logo-letter">A</span>
               </div>
-              <h1 className="font-serif font-bold text-xl tracking-tight liquid-title">MCP Editor</h1>
+              <div className="leading-tight">
+                <h1 className="font-serif font-bold text-xl tracking-tight liquid-title">Azat Studio</h1>
+                <p className="text-[10px] uppercase tracking-[0.18em] liquid-soft">Research Agent OS</p>
+              </div>
             </div>
             <button onClick={() => setIsOpen(false)} className="lg:hidden p-2 liquid-soft hover:liquid-title">
               <X size={20} />
@@ -84,12 +87,12 @@ export default function Sidebar({ activeTab, setActiveTab, isOpen, setIsOpen }: 
 
           <div className="p-4 mt-auto">
             <div className="liquid-surface rounded-xl p-4 border">
-              <div className="flex items-center gap-2 text-amber-700 mb-2">
+              <div className="flex items-center gap-2 text-teal-700 mb-2">
                 <AlertCircle size={16} />
-                <span className="text-xs font-bold uppercase tracking-wider">System Alert</span>
+                <span className="text-xs font-bold uppercase tracking-wider">System Brief</span>
               </div>
-              <p className="text-xs text-amber-700/90 leading-relaxed">
-                LiteSpeed Cache requires optimization. 3 issues detected.
+              <p className="text-xs text-teal-700/90 leading-relaxed">
+                Workspace running in liquid mode. Configure research + notebook paths in Settings.
               </p>
             </div>
           </div>

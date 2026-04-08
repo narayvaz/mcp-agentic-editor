@@ -641,6 +641,140 @@ export default function Settings() {
 
       <section className="liquid-surface-strong p-6 rounded-2xl border space-y-4">
         <div className="flex items-center gap-3">
+          <div className="p-2 liquid-pill text-cyan-600 rounded-lg">
+            <Search size={20} />
+          </div>
+          <div>
+            <h3 className="font-bold liquid-title">Research Fabric</h3>
+            <p className="text-xs liquid-muted">
+              Enable adaptive web browsing, scholarly retrieval, and notebook-style large document research.
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <label className="flex items-center gap-3 text-sm liquid-title">
+            <input
+              type="checkbox"
+              checked={config.research.webBrowsingEnabled}
+              onChange={(e) =>
+                setConfig({
+                  ...config,
+                  research: { ...config.research, webBrowsingEnabled: e.target.checked },
+                })
+              }
+              className="h-4 w-4 rounded border-white/50 bg-white/15 accent-cyan-500"
+            />
+            Enable internet browsing for factual checks
+          </label>
+
+          <label className="flex items-center gap-3 text-sm liquid-title">
+            <input
+              type="checkbox"
+              checked={config.research.scholarEnabled}
+              onChange={(e) =>
+                setConfig({
+                  ...config,
+                  research: { ...config.research, scholarEnabled: e.target.checked },
+                })
+              }
+              className="h-4 w-4 rounded border-white/50 bg-white/15 accent-cyan-500"
+            />
+            Enable scholarly source retrieval (OpenAlex)
+          </label>
+
+          <input
+            type="number"
+            min={2}
+            max={10}
+            value={config.research.maxWebSources}
+            onChange={(e) =>
+              setConfig({
+                ...config,
+                research: {
+                  ...config.research,
+                  maxWebSources: Number(e.target.value) || 5,
+                },
+              })
+            }
+            placeholder="Max web/scholar sources"
+            className="px-3 py-2 liquid-input rounded-lg text-sm"
+          />
+
+          <input
+            type="number"
+            min={2}
+            max={16}
+            value={config.research.maxNotebookSnippets}
+            onChange={(e) =>
+              setConfig({
+                ...config,
+                research: {
+                  ...config.research,
+                  maxNotebookSnippets: Number(e.target.value) || 6,
+                },
+              })
+            }
+            placeholder="Max notebook snippets"
+            className="px-3 py-2 liquid-input rounded-lg text-sm"
+          />
+
+          <input
+            value={config.research.notebookWorkspacePath}
+            onChange={(e) =>
+              setConfig({
+                ...config,
+                research: { ...config.research, notebookWorkspacePath: e.target.value },
+              })
+            }
+            placeholder="/Users/.../Documents/research_docs"
+            className="px-3 py-2 liquid-input rounded-lg text-sm md:col-span-2"
+          />
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={async () => {
+              try {
+                const payload = await fetchJson<{ ok: boolean; query: string; sources: Array<{ title: string }> }>(
+                  '/api/research/web',
+                  buildJsonInit('POST', { query: 'recent practical AI research' }),
+                );
+                setMessage(`Web research test OK: ${payload.sources.length} source(s) found.`);
+                setError('');
+              } catch (testError) {
+                setError(String(testError));
+              }
+            }}
+            className="flex items-center gap-2 px-4 py-2 liquid-pill border rounded-lg text-xs font-bold liquid-title"
+          >
+            <TestTube2 size={12} />
+            Test Web Research
+          </button>
+
+          <button
+            onClick={async () => {
+              try {
+                const payload = await fetchJson<{ ok: boolean; query: string; sources: Array<{ title: string }> }>(
+                  '/api/research/scholar',
+                  buildJsonInit('POST', { query: 'public health intervention outcomes' }),
+                );
+                setMessage(`Scholar research test OK: ${payload.sources.length} source(s) found.`);
+                setError('');
+              } catch (testError) {
+                setError(String(testError));
+              }
+            }}
+            className="flex items-center gap-2 px-4 py-2 liquid-pill border rounded-lg text-xs font-bold liquid-title"
+          >
+            <TestTube2 size={12} />
+            Test Scholar Research
+          </button>
+        </div>
+      </section>
+
+      <section className="liquid-surface-strong p-6 rounded-2xl border space-y-4">
+        <div className="flex items-center gap-3">
           <div className="p-2 liquid-pill text-sky-600 rounded-lg">
             <Wrench size={20} />
           </div>
@@ -676,7 +810,7 @@ export default function Settings() {
                 selfModification: { ...config.selfModification, workspacePath: e.target.value },
               })
             }
-            placeholder="/Users/.../Downloads/mcp-agentic-editor"
+            placeholder="/Users/.../Downloads/azat-studio"
             className="px-3 py-2 liquid-input rounded-lg text-sm"
           />
           <input
@@ -742,7 +876,7 @@ export default function Settings() {
           <div>
             <h3 className="font-bold liquid-title">NotebookLM & Research</h3>
             <p className="text-xs liquid-muted">
-              Direct NotebookLM account API access is not publicly available in this app runtime.
+              Direct NotebookLM private account API access is unavailable; use notebook workspace bridge + exported artifacts.
             </p>
           </div>
         </div>
@@ -758,8 +892,8 @@ export default function Settings() {
         <div className="p-4 liquid-note-warn rounded-xl border flex gap-3">
           <AlertCircle size={16} className="text-amber-500 shrink-0 mt-0.5" />
           <p className="text-sm liquid-title leading-relaxed">
-            Current best path: upload your source files directly in chat/content-review and let this app analyze them.
-            If you run a separate Antigravity + NotebookLM MCP workflow externally, this editor can still consume exported artifacts/results.
+            Recommended workflow: set a Notebook workspace path in Research Fabric, then this app can search large local docs.
+            If you run external NotebookLM MCP workflows, export notes/files into that workspace so Azat Studio can consume them.
           </p>
         </div>
       </section>

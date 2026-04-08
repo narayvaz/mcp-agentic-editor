@@ -113,7 +113,7 @@ export default function App() {
               <Menu size={20} />
             </button>
             <div className="hidden lg:flex items-center gap-2 text-sm liquid-soft font-medium">
-              <span>MCP</span>
+              <span>Azat</span>
               <span className="opacity-40">/</span>
               <span className="liquid-title capitalize">{activeTab.replace('-', ' ')}</span>
             </div>
@@ -127,7 +127,7 @@ export default function App() {
               }`}
             >
               <Bot size={18} />
-              <span className="hidden sm:inline">Ask Agent</span>
+              <span className="hidden sm:inline">Ask Studio</span>
             </button>
             <div className="w-8 h-8 rounded-full liquid-pill border overflow-hidden">
               <img 
@@ -168,7 +168,7 @@ export default function App() {
               >
                 <div className="h-full p-3 lg:p-4">
                   <AgentChat 
-                    context={`Currently viewing the ${activeTab} tab of the MCP Agentic Editor.`} 
+                    context={`Currently viewing the ${activeTab} tab of Azat Studio.`} 
                     onClose={() => setIsChatOpen(false)}
                   />
                 </div>

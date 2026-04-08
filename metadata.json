@@ -1,5 +1,5 @@
 {
-  "name": "MCP Agentic Editor",
-  "description": "A cross-platform agentic editor for managing news content, SEO, automations, and WordPress health for the MCP news website.",
+  "name": "Azat Studio",
+  "description": "A cross-platform research and publishing studio for content intelligence, SEO, automations, and MCP workflows.",
   "requestFramePermissions": ["camera", "microphone"]
 }

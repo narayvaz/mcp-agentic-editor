@@ -1,4 +1,4 @@
-# MCP Agentic Editor
+# Azat Studio
 
 A high-performance, agent-driven dashboard for managing SEO, WordPress health, and content reviews. Built with React, TypeScript, and Tailwind CSS.
 
@@ -50,8 +50,8 @@ npm run electron:build
 ```
 
 Output files are placed in:
-- `release/MCP Agentic Editor-<version>.dmg`
-- `release/MCP Agentic Editor-<version>-mac.zip`
+- `release/Azat-Studio-<version>-arm64.dmg`
+- `release/Azat-Studio-<version>-arm64.zip`
 
 ### 8. Access the Browser App
 If running `npm run dev`, open:

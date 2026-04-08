@@ -16,8 +16,9 @@ import {
   Pencil,
   Check,
   RotateCcw,
+  Wrench,
 } from 'lucide-react';
-import { getAgentResponse, AgentPart } from '../services/gemini';
+import { getAgentResponse, AgentPart, AgentResearchOptions } from '../services/gemini';
 import ReactMarkdown from 'react-markdown';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -48,6 +49,26 @@ interface AgentChatProps {
   onClose?: () => void;
 }
 
+interface SelfModProposalResponse {
+  ok?: boolean;
+  proposalId: string;
+  targetFile: string;
+  summary: string;
+  diffPreview: string;
+  approvalCode: string;
+  expiresAt: string;
+  modelUsed?: string;
+  warning?: string;
+  message?: string;
+}
+
+interface SelfModApplyResponse {
+  ok: boolean;
+  message: string;
+  targetFile?: string;
+  backupPath?: string;
+}
+
 const THREADS_STORAGE_KEY = 'mcp-agent-chat-threads-v2';
 const ACTIVE_THREAD_STORAGE_KEY = 'mcp-agent-chat-active-thread-v2';
 const LEGACY_HISTORY_STORAGE_KEY = 'mcp-agent-chat-history-v1';
@@ -60,7 +81,7 @@ function createWelcomeMessage(): Message {
   return {
     id: createId('msg'),
     role: 'agent',
-    content: 'Hello! I am your MCP Agentic Editor. How can I help you today?',
+    content: 'Hello! I am your Azat Studio research agent. How can I help you today?',
     createdAt: new Date().toISOString(),
   };
 }
@@ -153,6 +174,17 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
   const [attachments, setAttachments] = useState<{ file: File; type: 'image' | 'audio' | 'video' | 'file'; preview: string }[]>([]);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingDraft, setEditingDraft] = useState('');
+  const [researchMode, setResearchMode] = useState<AgentResearchOptions>({
+    web: true,
+    scholar: true,
+    notebook: false,
+    articleMode: false,
+  });
+  const [selfModMode, setSelfModMode] = useState(false);
+  const [selfModTargetFile, setSelfModTargetFile] = useState('');
+  const [selfModProposal, setSelfModProposal] = useState<SelfModProposalResponse | null>(null);
+  const [selfModApprovalInput, setSelfModApprovalInput] = useState('');
+  const [isSelfModBusy, setIsSelfModBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -216,6 +248,11 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
     if (!container) return;
     container.scrollTop = container.scrollHeight;
   }, [activeThread?.messages.length, isTyping]);
+
+  useEffect(() => {
+    setSelfModProposal(null);
+    setSelfModApprovalInput('');
+  }, [activeThreadId]);
 
   const updateActiveThread = (updater: (thread: ChatThread) => ChatThread) => {
     if (!activeThread) return;
@@ -334,6 +371,52 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
     setEditingDraft('');
   };
 
+  const pushAgentMessage = (content: string) => {
+    updateActiveThread((thread) => ({
+      ...thread,
+      updatedAt: new Date().toISOString(),
+      messages: [
+        ...thread.messages,
+        {
+          id: createId('msg'),
+          role: 'agent',
+          content,
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    }));
+  };
+
+  const applySelfModification = async () => {
+    if (!selfModProposal || !selfModApprovalInput.trim()) return;
+    setIsSelfModBusy(true);
+    try {
+      const response = await fetch('/api/self-mod/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          proposalId: selfModProposal.proposalId,
+          approvalCode: selfModApprovalInput.trim(),
+        }),
+      });
+      const payload = (await response.json()) as SelfModApplyResponse;
+      if (!response.ok || !payload.ok) {
+        pushAgentMessage(`Self-mod apply failed: ${payload.message || 'Unknown error'}`);
+        return;
+      }
+      pushAgentMessage(
+        `Self-mod applied to \`${payload.targetFile || selfModProposal.targetFile}\`.\n\nBackup: \`${payload.backupPath || 'created'}\``,
+      );
+      setSelfModProposal(null);
+      setSelfModApprovalInput('');
+      setSelfModMode(false);
+    } catch (error) {
+      pushAgentMessage(`Self-mod apply failed: ${String(error)}`);
+    } finally {
+      setIsSelfModBusy(false);
+    }
+  };
+
   const handleSend = async () => {
     if (!activeThread) return;
     if (!input.trim() && attachments.length === 0) return;
@@ -368,6 +451,59 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
 
     setIsTyping(true);
 
+    if (selfModMode) {
+      if (!selfModTargetFile.trim()) {
+        pushAgentMessage('Self-mod mode is ON, but target file is empty. Add a target file first.');
+        setIsTyping(false);
+        return;
+      }
+
+      setIsSelfModBusy(true);
+      try {
+        const response = await fetch('/api/self-mod/propose', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            targetFile: selfModTargetFile.trim(),
+            instruction: userPrompt,
+          }),
+        });
+
+        const payload = (await response.json()) as SelfModProposalResponse;
+        if (!response.ok || !payload.proposalId) {
+          pushAgentMessage(`Self-mod proposal failed: ${payload.message || 'Unknown error'}`);
+          setIsTyping(false);
+          setIsSelfModBusy(false);
+          return;
+        }
+
+        setSelfModProposal(payload);
+        setSelfModApprovalInput('');
+        pushAgentMessage(
+          [
+            `Self-mod proposal ready for \`${payload.targetFile}\`.`,
+            '',
+            `Summary: ${payload.summary}`,
+            `Approval code: \`${payload.approvalCode}\``,
+            `Expires: ${new Date(payload.expiresAt).toLocaleString()}`,
+            '',
+            'Diff preview:',
+            '```diff',
+            payload.diffPreview || 'No diff preview',
+            '```',
+          ].join('\n'),
+        );
+      } catch (error) {
+        pushAgentMessage(`Self-mod proposal failed: ${String(error)}`);
+      } finally {
+        setIsTyping(false);
+        setIsSelfModBusy(false);
+      }
+      return;
+    }
+
     const parts: AgentPart[] = [];
     for (const attachment of currentAttachments) {
       const base64Data = attachment.preview.split(',')[1];
@@ -379,21 +515,8 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
       });
     }
 
-    const response = await getAgentResponse(userPrompt, context, parts);
-
-    updateActiveThread((thread) => ({
-      ...thread,
-      updatedAt: new Date().toISOString(),
-      messages: [
-        ...thread.messages,
-        {
-          id: createId('msg'),
-          role: 'agent',
-          content: response || 'No response',
-          createdAt: new Date().toISOString(),
-        },
-      ],
-    }));
+    const response = await getAgentResponse(userPrompt, context, parts, researchMode);
+    pushAgentMessage(response || 'No response');
 
     setIsTyping(false);
   };
@@ -436,7 +559,7 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <Bot size={18} className="text-sky-600 shrink-0" />
-            <h2 className="font-semibold text-xs uppercase tracking-wider liquid-title truncate">MCP Agent Intelligence</h2>
+            <h2 className="font-semibold text-xs uppercase tracking-wider liquid-title truncate">Azat Studio Intelligence</h2>
             <span className="px-2 py-0.5 liquid-pill text-emerald-600 text-[8px] font-bold rounded-full border uppercase tracking-widest">
               Multimodal
             </span>
@@ -572,6 +695,88 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
           Chat threads are stored locally on this device. You can create, archive, delete, and edit prompts.
         </div>
 
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => setResearchMode((prev) => ({ ...prev, web: !prev.web }))}
+            className={`px-2.5 py-1 rounded-full text-[10px] font-semibold border ${
+              researchMode.web ? 'liquid-accent text-white' : 'liquid-pill liquid-title'
+            }`}
+          >
+            Web
+          </button>
+          <button
+            onClick={() => setResearchMode((prev) => ({ ...prev, scholar: !prev.scholar }))}
+            className={`px-2.5 py-1 rounded-full text-[10px] font-semibold border ${
+              researchMode.scholar ? 'liquid-accent text-white' : 'liquid-pill liquid-title'
+            }`}
+          >
+            Scholar
+          </button>
+          <button
+            onClick={() => setResearchMode((prev) => ({ ...prev, notebook: !prev.notebook }))}
+            className={`px-2.5 py-1 rounded-full text-[10px] font-semibold border ${
+              researchMode.notebook ? 'liquid-accent text-white' : 'liquid-pill liquid-title'
+            }`}
+          >
+            Notebook
+          </button>
+          <button
+            onClick={() => setResearchMode((prev) => ({ ...prev, articleMode: !prev.articleMode }))}
+            className={`px-2.5 py-1 rounded-full text-[10px] font-semibold border ${
+              researchMode.articleMode ? 'liquid-accent text-white' : 'liquid-pill liquid-title'
+            }`}
+          >
+            Article Mode
+          </button>
+          <button
+            onClick={() => setSelfModMode((prev) => !prev)}
+            className={`px-2.5 py-1 rounded-full text-[10px] font-semibold border inline-flex items-center gap-1 ${
+              selfModMode ? 'liquid-accent text-white' : 'liquid-pill liquid-title'
+            }`}
+          >
+            <Wrench size={11} />
+            Self-Modify
+          </button>
+        </div>
+
+        {selfModMode && (
+          <div className="space-y-2 liquid-surface border rounded-xl p-3">
+            <div className="text-[10px] liquid-soft uppercase tracking-wider font-bold">Self-mod target file</div>
+            <input
+              value={selfModTargetFile}
+              onChange={(e) => setSelfModTargetFile(e.target.value)}
+              placeholder="src/components/Sidebar.tsx"
+              className="w-full px-3 py-2 liquid-input rounded-lg text-xs"
+            />
+            <p className="text-[11px] liquid-muted">
+              Send a message describing the exact code change. The agent will create a proposal with diff + approval code.
+            </p>
+          </div>
+        )}
+
+        {selfModProposal && (
+          <div className="space-y-2 liquid-surface border rounded-xl p-3">
+            <div className="text-xs liquid-title font-semibold">Pending Self-Mod Proposal</div>
+            <div className="text-[11px] liquid-muted">File: {selfModProposal.targetFile}</div>
+            <div className="text-[11px] liquid-muted">Approval code: <code>{selfModProposal.approvalCode}</code></div>
+            <div className="flex gap-2">
+              <input
+                value={selfModApprovalInput}
+                onChange={(e) => setSelfModApprovalInput(e.target.value)}
+                placeholder="Type approval code to apply"
+                className="flex-1 px-3 py-2 liquid-input rounded-lg text-xs"
+              />
+              <button
+                onClick={applySelfModification}
+                disabled={isSelfModBusy || !selfModApprovalInput.trim()}
+                className="px-3 py-2 liquid-accent text-white rounded-lg text-xs font-bold disabled:opacity-60"
+              >
+                {isSelfModBusy ? 'Applying...' : 'Apply'}
+              </button>
+            </div>
+          </div>
+        )}
+
         {attachments.length > 0 && (
           <div className="flex flex-wrap gap-2 pb-2">
             {attachments.map((att, idx) => (
@@ -620,7 +825,7 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-              placeholder="Ask the agent to review content, check SEO, or fix issues..."
+              placeholder="Ask for checks, web facts, scholar findings, or deep-dive analysis..."
               className="w-full pl-4 pr-12 py-3 liquid-input border rounded-xl focus:outline-none transition-all text-sm liquid-title"
             />
             <button

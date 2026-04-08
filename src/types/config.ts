@@ -37,6 +37,14 @@ export interface SelfModificationConfig {
   workspacePath: string;
 }
 
+export interface ResearchConfig {
+  webBrowsingEnabled: boolean;
+  scholarEnabled: boolean;
+  notebookWorkspacePath: string;
+  maxWebSources: number;
+  maxNotebookSnippets: number;
+}
+
 export interface AppConfig {
   version: number;
   activeSiteId: string | null;
@@ -46,6 +54,7 @@ export interface AppConfig {
   hostinger: HostingerConfig;
   ai: AiConfig;
   selfModification: SelfModificationConfig;
+  research: ResearchConfig;
   connectorToolPath: string;
   notebookLmEnabled: boolean;
   mcpRules: string;

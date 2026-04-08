@@ -4,6 +4,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { createHash } from "crypto";
+import { execFileSync } from "child_process";
 import { GoogleGenAI } from "@google/genai";
 import { fileURLToPath } from "url";
 
@@ -56,6 +57,12 @@ interface AgentRequestBody {
   prompt?: string;
   context?: string;
   parts?: AgentPart[];
+  research?: {
+    web?: boolean;
+    scholar?: boolean;
+    notebook?: boolean;
+    articleMode?: boolean;
+  };
 }
 
 interface WordPressSiteConfig {
@@ -97,6 +104,14 @@ interface SelfModificationConfig {
   workspacePath: string;
 }
 
+interface ResearchConfig {
+  webBrowsingEnabled: boolean;
+  scholarEnabled: boolean;
+  notebookWorkspacePath: string;
+  maxWebSources: number;
+  maxNotebookSnippets: number;
+}
+
 interface AppConfig {
   version: number;
   activeSiteId: string | null;
@@ -106,6 +121,7 @@ interface AppConfig {
   hostinger: HostingerConfig;
   ai: AiConfig;
   selfModification: SelfModificationConfig;
+  research: ResearchConfig;
   connectorToolPath: string;
   notebookLmEnabled: boolean;
   mcpRules: string;
@@ -149,6 +165,14 @@ interface SelfModProposal {
 }
 
 const selfModProposals = new Map<string, SelfModProposal>();
+const KEYCHAIN_SERVICE = "Azat Studio";
+const KEYCHAIN_REF_PREFIX = "keychain://";
+
+interface WebSource {
+  title: string;
+  url: string;
+  snippet: string;
+}
 
 function normalizeBaseUrl(url: string): string {
   return (url || "").trim().replace(/\/+$/, "");
@@ -156,7 +180,7 @@ function normalizeBaseUrl(url: string): string {
 
 function defaultConfig(): AppConfig {
   return {
-    version: 1,
+    version: 2,
     activeSiteId: null,
     wordpressSites: [],
     vps: {
@@ -185,6 +209,13 @@ function defaultConfig(): AppConfig {
       enabled: false,
       workspacePath: "",
     },
+    research: {
+      webBrowsingEnabled: true,
+      scholarEnabled: true,
+      notebookWorkspacePath: "",
+      maxWebSources: 5,
+      maxNotebookSnippets: 6,
+    },
     connectorToolPath: "",
     notebookLmEnabled: false,
     mcpRules: DEFAULT_RULES,
@@ -195,6 +226,95 @@ function getConfigFilePath(): string {
   const configDir = path.join(os.homedir(), ".mcp-agentic-editor");
   fs.mkdirSync(configDir, { recursive: true });
   return path.join(configDir, "config.json");
+}
+
+function isKeychainSupported(): boolean {
+  return process.platform === "darwin";
+}
+
+function toKeychainRef(account: string): string {
+  return `${KEYCHAIN_REF_PREFIX}${account}`;
+}
+
+function keychainAccountFromValue(value: string): string {
+  return value.startsWith(KEYCHAIN_REF_PREFIX) ? value.slice(KEYCHAIN_REF_PREFIX.length) : "";
+}
+
+function readKeychainSecret(account: string): string {
+  if (!isKeychainSupported()) return "";
+  try {
+    return String(
+      execFileSync("security", ["find-generic-password", "-a", account, "-s", KEYCHAIN_SERVICE, "-w"], {
+        encoding: "utf-8",
+      }),
+    ).trim();
+  } catch {
+    return "";
+  }
+}
+
+function writeKeychainSecret(account: string, value: string): boolean {
+  if (!isKeychainSupported()) return false;
+  try {
+    execFileSync("security", ["add-generic-password", "-a", account, "-s", KEYCHAIN_SERVICE, "-w", value, "-U"], {
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveSecretValue(account: string, value: string): string {
+  const trimmed = (value || "").trim();
+  if (!trimmed) return "";
+  const accountFromRef = keychainAccountFromValue(trimmed);
+  if (accountFromRef) {
+    return readKeychainSecret(accountFromRef) || "";
+  }
+  return trimmed;
+}
+
+function storeSecretValue(account: string, value: string): string {
+  const trimmed = (value || "").trim();
+  if (!trimmed) return "";
+  if (!isKeychainSupported()) return trimmed;
+  const ok = writeKeychainSecret(account, trimmed);
+  return ok ? toKeychainRef(account) : trimmed;
+}
+
+function hydrateConfigSecrets(config: AppConfig): AppConfig {
+  const hydrated: AppConfig = JSON.parse(JSON.stringify(config));
+
+  hydrated.ai.apiKey = resolveSecretValue("ai.apiKey", hydrated.ai.apiKey);
+  hydrated.vps.apiToken = resolveSecretValue("vps.apiToken", hydrated.vps.apiToken);
+  hydrated.hostinger.apiToken = resolveSecretValue("hostinger.apiToken", hydrated.hostinger.apiToken);
+  hydrated.google.serviceAccountJson = resolveSecretValue("google.serviceAccountJson", hydrated.google.serviceAccountJson);
+
+  hydrated.wordpressSites = hydrated.wordpressSites.map((site) => ({
+    ...site,
+    username: resolveSecretValue(`wordpress.${site.id}.username`, site.username),
+    appPassword: resolveSecretValue(`wordpress.${site.id}.appPassword`, site.appPassword),
+  }));
+
+  return hydrated;
+}
+
+function persistConfigSecrets(config: AppConfig): AppConfig {
+  const stored: AppConfig = JSON.parse(JSON.stringify(config));
+
+  stored.ai.apiKey = storeSecretValue("ai.apiKey", stored.ai.apiKey);
+  stored.vps.apiToken = storeSecretValue("vps.apiToken", stored.vps.apiToken);
+  stored.hostinger.apiToken = storeSecretValue("hostinger.apiToken", stored.hostinger.apiToken);
+  stored.google.serviceAccountJson = storeSecretValue("google.serviceAccountJson", stored.google.serviceAccountJson);
+
+  stored.wordpressSites = stored.wordpressSites.map((site) => ({
+    ...site,
+    username: storeSecretValue(`wordpress.${site.id}.username`, site.username),
+    appPassword: storeSecretValue(`wordpress.${site.id}.appPassword`, site.appPassword),
+  }));
+
+  return stored;
 }
 
 function readConfig(): AppConfig {
@@ -217,6 +337,7 @@ function readConfig(): AppConfig {
       hostinger: { ...defaults.hostinger, ...(parsed.hostinger || {}) },
       ai: { ...defaults.ai, ...(parsed.ai || {}) },
       selfModification: { ...defaults.selfModification, ...(parsed.selfModification || {}) },
+      research: { ...defaults.research, ...(parsed.research || {}) },
       wordpressSites: Array.isArray(parsed.wordpressSites) ? parsed.wordpressSites : [],
       connectorToolPath: typeof parsed.connectorToolPath === "string" ? parsed.connectorToolPath : defaults.connectorToolPath,
       mcpRules: typeof parsed.mcpRules === "string" && parsed.mcpRules.trim() ? parsed.mcpRules : defaults.mcpRules,
@@ -225,7 +346,7 @@ function readConfig(): AppConfig {
     if (merged.activeSiteId && !merged.wordpressSites.some((site) => site.id === merged.activeSiteId)) {
       merged.activeSiteId = merged.wordpressSites[0]?.id || null;
     }
-    return merged;
+    return hydrateConfigSecrets(merged);
   } catch (error) {
     console.error("Failed to read config file, using defaults:", error);
     return defaultConfig();
@@ -257,6 +378,10 @@ function sanitizeConfigInput(input: Partial<AppConfig>): AppConfig {
       ...base.selfModification,
       ...(input.selfModification || {}),
     },
+    research: {
+      ...base.research,
+      ...(input.research || {}),
+    },
     wordpressSites: Array.isArray(input.wordpressSites)
       ? input.wordpressSites
           .map((site, index) => ({
@@ -281,6 +406,11 @@ function sanitizeConfigInput(input: Partial<AppConfig>): AppConfig {
   merged.ai.apiKey = (merged.ai.apiKey || base.ai.apiKey || "").trim();
   merged.selfModification.workspacePath = (merged.selfModification.workspacePath || base.selfModification.workspacePath || "").trim();
   merged.selfModification.enabled = Boolean(merged.selfModification.enabled);
+  merged.research.notebookWorkspacePath = (merged.research.notebookWorkspacePath || "").trim();
+  merged.research.webBrowsingEnabled = Boolean(merged.research.webBrowsingEnabled);
+  merged.research.scholarEnabled = Boolean(merged.research.scholarEnabled);
+  merged.research.maxWebSources = Math.max(2, Math.min(10, Number(merged.research.maxWebSources || 5)));
+  merged.research.maxNotebookSnippets = Math.max(2, Math.min(16, Number(merged.research.maxNotebookSnippets || 6)));
   merged.connectorToolPath = merged.connectorToolPath.trim();
 
   if (merged.activeSiteId && !merged.wordpressSites.some((site) => site.id === merged.activeSiteId)) {
@@ -295,7 +425,8 @@ function sanitizeConfigInput(input: Partial<AppConfig>): AppConfig {
 
 function writeConfig(config: AppConfig): void {
   const configPath = getConfigFilePath();
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+  const toStore = persistConfigSecrets(config);
+  fs.writeFileSync(configPath, JSON.stringify(toStore, null, 2), "utf-8");
 }
 
 function getGeminiApiKey(config: AppConfig): string {
@@ -466,7 +597,7 @@ function stripHtml(input: string): string {
 }
 
 function buildSystemPrompt(context: string | undefined, rules: string): string {
-  return `You are the MCP Agentic Editor, an AI assistant for a news website.
+  return `You are Azat Studio Agent, an AI assistant for research, editorial workflows, and automation.
 
 STRICT RULES TO FOLLOW (MCP RULES):
 ${rules}
@@ -477,6 +608,7 @@ Your goals:
 3. Help manage WordPress issues.
 4. Assist with automations.
 5. Analyze images, audio, and video content provided for news value and SEO (ALT text, captions).
+6. When research sources are provided, ground factual claims in those sources and cite URLs inline.
 
 Context: ${context || "No additional context provided."}`;
 }
@@ -603,6 +735,248 @@ function pickByKey(flatMap: Record<string, string>, candidates: string[]): strin
   return "";
 }
 
+function decodeHtmlEntities(input: string): string {
+  return input
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+function compactPlainText(input: string, maxLength = 700): string {
+  const clean = stripHtml(decodeHtmlEntities(input || "")).replace(/\s+/g, " ").trim();
+  return clean.length > maxLength ? `${clean.slice(0, maxLength - 1)}...` : clean;
+}
+
+async function fetchTextSafe(url: string, timeoutMs = 14000): Promise<string> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "AzatStudioBot/1.0",
+      },
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} for ${url}`);
+    }
+    return await response.text();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function toJinaReadUrl(targetUrl: string): string {
+  return `https://r.jina.ai/http://${targetUrl.replace(/^https?:\/\//i, "")}`;
+}
+
+function parseDuckDuckGoHtmlResults(html: string, limit: number): WebSource[] {
+  const blocks = html.match(/<div class="result__body">[\s\S]*?<\/div>\s*<\/div>/g) || [];
+  const results: WebSource[] = [];
+
+  for (const block of blocks) {
+    if (results.length >= limit) break;
+    const linkMatch = block.match(/<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"/i);
+    const titleMatch = block.match(/<a[^>]+class="[^"]*result__a[^"]*"[^>]*>([\s\S]*?)<\/a>/i);
+    const snippetMatch = block.match(/<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/i);
+    const rawUrl = linkMatch?.[1] || "";
+    if (!rawUrl.startsWith("http")) continue;
+
+    const title = compactPlainText(titleMatch?.[1] || rawUrl, 160);
+    const snippet = compactPlainText(snippetMatch?.[1] || "", 260);
+    results.push({ title, url: rawUrl, snippet });
+  }
+
+  if (results.length) return results;
+
+  const linkRegex = /<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+  let match: RegExpExecArray | null = null;
+  while ((match = linkRegex.exec(html)) && results.length < limit) {
+    const url = match[1];
+    const title = compactPlainText(match[2], 160);
+    if (!title || /duckduckgo/i.test(url)) continue;
+    if (results.some((entry) => entry.url === url)) continue;
+    results.push({ title, url, snippet: "" });
+  }
+  return results;
+}
+
+async function getWebSources(query: string, maxSources: number): Promise<WebSource[]> {
+  const limit = Math.max(2, Math.min(10, maxSources));
+  const encodedQuery = encodeURIComponent(query.trim());
+  const html = await fetchTextSafe(`https://duckduckgo.com/html/?q=${encodedQuery}`, 12000);
+  const parsed = parseDuckDuckGoHtmlResults(html, limit);
+  const candidates = parsed.slice(0, limit);
+
+  const enriched = await Promise.all(
+    candidates.map(async (source) => {
+      if (source.snippet.length > 60) return source;
+      try {
+        const raw = await fetchTextSafe(toJinaReadUrl(source.url), 10000);
+        return {
+          ...source,
+          snippet: compactPlainText(raw, 260),
+        };
+      } catch {
+        return source;
+      }
+    }),
+  );
+
+  return enriched.filter((source) => source.url && source.title);
+}
+
+function openAlexAbstractToText(index: Record<string, number[]> | undefined): string {
+  if (!index || typeof index !== "object") return "";
+  let maxPosition = -1;
+  for (const positions of Object.values(index)) {
+    for (const position of positions || []) {
+      if (position > maxPosition) maxPosition = position;
+    }
+  }
+  if (maxPosition < 0) return "";
+
+  const words = new Array<string>(maxPosition + 1).fill("");
+  for (const [word, positions] of Object.entries(index)) {
+    for (const position of positions || []) {
+      if (position >= 0 && position < words.length) {
+        words[position] = word;
+      }
+    }
+  }
+  return words.join(" ").replace(/\s+/g, " ").trim();
+}
+
+async function getScholarSources(query: string, maxSources: number): Promise<WebSource[]> {
+  const limit = Math.max(2, Math.min(8, maxSources));
+  const endpoint = `https://api.openalex.org/works?search=${encodeURIComponent(query)}&per-page=${limit}`;
+  const text = await fetchTextSafe(endpoint, 12000);
+  const payload = JSON.parse(text) as { results?: any[] };
+  const results = Array.isArray(payload.results) ? payload.results : [];
+
+  return results.slice(0, limit).map((item) => {
+    const title = compactPlainText(item?.title || "Untitled scholarly source", 180);
+    const abstractText = compactPlainText(openAlexAbstractToText(item?.abstract_inverted_index), 280);
+    const sourceName = compactPlainText(item?.primary_location?.source?.display_name || "OpenAlex source", 80);
+    const published = item?.publication_date ? `Published: ${item.publication_date}. ` : "";
+    const snippet = `${published}${sourceName}. ${abstractText || "Abstract unavailable from source metadata."}`.trim();
+    const doiUrl = typeof item?.doi === "string" && item.doi ? item.doi : "";
+    const fallbackUrl = item?.primary_location?.landing_page_url || item?.ids?.openalex || "";
+    return {
+      title,
+      url: doiUrl || fallbackUrl || "https://api.openalex.org",
+      snippet,
+    };
+  });
+}
+
+function walkResearchFiles(rootPath: string, maxDepth = 5, currentDepth = 0): string[] {
+  if (currentDepth > maxDepth) return [];
+  const allowedExtensions = new Set([".txt", ".md", ".markdown", ".json", ".csv", ".html", ".htm", ".pdf"]);
+  const ignoredDirs = new Set([".git", "node_modules", "dist", "dist-server", "dist-electron", "release"]);
+
+  let entries: fs.Dirent[] = [];
+  try {
+    entries = fs.readdirSync(rootPath, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const files: string[] = [];
+  for (const entry of entries) {
+    const fullPath = path.join(rootPath, entry.name);
+    if (entry.isDirectory()) {
+      if (ignoredDirs.has(entry.name)) continue;
+      files.push(...walkResearchFiles(fullPath, maxDepth, currentDepth + 1));
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    const ext = path.extname(entry.name).toLowerCase();
+    if (allowedExtensions.has(ext)) files.push(fullPath);
+  }
+  return files;
+}
+
+function readResearchFileText(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  try {
+    if (ext === ".pdf") {
+      return String(execFileSync("pdftotext", ["-layout", filePath, "-"], { encoding: "utf-8", maxBuffer: 24 * 1024 * 1024 }));
+    }
+    const raw = fs.readFileSync(filePath, "utf-8");
+    if (ext === ".json") {
+      try {
+        return JSON.stringify(JSON.parse(raw), null, 2);
+      } catch {
+        return raw;
+      }
+    }
+    return raw;
+  } catch {
+    return "";
+  }
+}
+
+function scoreTextByQuery(text: string, query: string): { score: number; snippet: string } {
+  const normalizedText = text.replace(/\s+/g, " ").trim();
+  if (!normalizedText) return { score: 0, snippet: "" };
+  const words = query
+    .toLowerCase()
+    .split(/[^a-z0-9]+/i)
+    .filter((word) => word.length >= 3);
+  if (!words.length) return { score: 0, snippet: compactPlainText(normalizedText, 280) };
+
+  const lower = normalizedText.toLowerCase();
+  let score = 0;
+  let firstHit = -1;
+  for (const word of words) {
+    const idx = lower.indexOf(word);
+    if (idx >= 0) {
+      score += 1;
+      if (firstHit < 0 || idx < firstHit) firstHit = idx;
+    }
+  }
+  if (score === 0) return { score: 0, snippet: "" };
+
+  const from = Math.max(0, firstHit - 180);
+  const to = Math.min(normalizedText.length, from + 520);
+  const snippet = compactPlainText(normalizedText.slice(from, to), 320);
+  return { score, snippet };
+}
+
+function getNotebookSources(query: string, workspacePath: string, maxSnippets: number): WebSource[] {
+  if (!workspacePath) return [];
+  const root = path.resolve(workspacePath);
+  if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) return [];
+
+  const files = walkResearchFiles(root, 5).slice(0, 120);
+  const scored = files
+    .map((filePath) => {
+      const text = readResearchFileText(filePath);
+      const { score, snippet } = scoreTextByQuery(text, query);
+      return { filePath, score, snippet };
+    })
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, Math.max(2, Math.min(16, maxSnippets)));
+
+  return scored.map((entry) => ({
+    title: path.basename(entry.filePath),
+    url: `file://${entry.filePath}`,
+    snippet: entry.snippet,
+  }));
+}
+
+function formatSourcesAsPromptBlock(label: string, sources: WebSource[]): string {
+  if (!sources.length) return "";
+  const rows = sources
+    .map((source, idx) => `${idx + 1}. ${source.title}\nURL: ${source.url}\nSnippet: ${source.snippet}`)
+    .join("\n\n");
+  return `\n${label}:\n${rows}\n`;
+}
+
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT || 3000);
@@ -614,12 +988,16 @@ async function startServer() {
     const config = readConfig();
     res.json({
       status: "ok",
+      appName: "Azat Studio",
       timestamp: new Date().toISOString(),
       configuredSites: config.wordpressSites.length,
       hasVpsBridge: Boolean(config.vps.baseUrl),
       hasHostingerConfig: Boolean(config.hostinger.baseUrl),
       selectedModel: config.ai.model,
       selfModificationEnabled: config.selfModification.enabled,
+      webBrowsingEnabled: config.research.webBrowsingEnabled,
+      scholarEnabled: config.research.scholarEnabled,
+      keychainSupported: isKeychainSupported(),
       notebookLmEnabled: config.notebookLmEnabled,
     });
   });
@@ -630,6 +1008,51 @@ async function startServer() {
       selectedModel: config.ai.model,
       fallbackModel: config.ai.fallbackModel,
       models: AVAILABLE_MODELS,
+    });
+  });
+
+  app.get("/api/mcp/status", (_req, res) => {
+    const config = readConfig();
+    res.json({
+      app: "Azat Studio",
+      mcpRuntime: "elastic-v1",
+      connectors: [
+        {
+          id: "wordpress",
+          enabled: config.wordpressSites.length > 0,
+          fallback: "vps-bridge",
+        },
+        {
+          id: "vps-bridge",
+          enabled: Boolean(config.vps.baseUrl),
+          fallback: "wordpress-direct",
+        },
+        {
+          id: "hostinger",
+          enabled: Boolean(config.hostinger.baseUrl),
+          fallback: "none",
+        },
+        {
+          id: "web-research",
+          enabled: config.research.webBrowsingEnabled,
+          fallback: "scholar-only",
+        },
+        {
+          id: "scholar-research",
+          enabled: config.research.scholarEnabled,
+          fallback: "web-only",
+        },
+        {
+          id: "notebook-bridge",
+          enabled: Boolean(config.research.notebookWorkspacePath),
+          fallback: "attachments-in-chat",
+        },
+      ],
+      policy: {
+        retriesPerConnector: 2,
+        timeoutMs: 14000,
+        sourceCap: config.research.maxWebSources,
+      },
     });
   });
 
@@ -1248,6 +1671,144 @@ ${reviewContent}`;
     }
   });
 
+  app.post("/api/research/web", async (req, res) => {
+    try {
+      const query = String(req.body?.query || "").trim();
+      if (!query) {
+        return res.status(400).json({ ok: false, message: "query is required." });
+      }
+      const config = readConfig();
+      if (!config.research.webBrowsingEnabled) {
+        return res.status(400).json({ ok: false, message: "Web browsing is disabled in settings." });
+      }
+      const sources = await getWebSources(query, config.research.maxWebSources);
+      return res.json({
+        ok: true,
+        query,
+        sources,
+      });
+    } catch (error) {
+      return res.status(500).json({ ok: false, message: String(error) });
+    }
+  });
+
+  app.post("/api/research/scholar", async (req, res) => {
+    try {
+      const query = String(req.body?.query || "").trim();
+      if (!query) {
+        return res.status(400).json({ ok: false, message: "query is required." });
+      }
+      const config = readConfig();
+      if (!config.research.scholarEnabled) {
+        return res.status(400).json({ ok: false, message: "Scholar research is disabled in settings." });
+      }
+      const sources = await getScholarSources(query, Math.max(3, config.research.maxWebSources));
+      return res.json({
+        ok: true,
+        query,
+        sources,
+      });
+    } catch (error) {
+      return res.status(500).json({ ok: false, message: String(error) });
+    }
+  });
+
+  app.post("/api/research/notebook", (req, res) => {
+    try {
+      const query = String(req.body?.query || "").trim();
+      if (!query) {
+        return res.status(400).json({ ok: false, message: "query is required." });
+      }
+      const config = readConfig();
+      const rootPath = String(req.body?.workspacePath || config.research.notebookWorkspacePath || "").trim();
+      if (!rootPath) {
+        return res.status(400).json({
+          ok: false,
+          message: "Notebook workspace path is not configured. Set it in Settings > Research.",
+        });
+      }
+      const sources = getNotebookSources(query, rootPath, config.research.maxNotebookSnippets);
+      return res.json({
+        ok: true,
+        query,
+        workspacePath: rootPath,
+        sources,
+      });
+    } catch (error) {
+      return res.status(500).json({ ok: false, message: String(error) });
+    }
+  });
+
+  app.post("/api/research/deep-dive", async (req, res) => {
+    try {
+      const query = String(req.body?.query || "").trim();
+      if (!query) {
+        return res.status(400).json({ ok: false, message: "query is required." });
+      }
+
+      const config = readConfig();
+      const includeWeb = req.body?.includeWeb !== false && config.research.webBrowsingEnabled;
+      const includeScholar = req.body?.includeScholar !== false && config.research.scholarEnabled;
+      const includeNotebook = Boolean(req.body?.includeNotebook);
+      const articleMode = Boolean(req.body?.articleMode);
+      const notebookPath = String(req.body?.workspacePath || config.research.notebookWorkspacePath || "").trim();
+
+      const webSources = includeWeb ? await getWebSources(query, config.research.maxWebSources) : [];
+      const scholarSources = includeScholar ? await getScholarSources(query, Math.max(3, config.research.maxWebSources)) : [];
+      const notebookSources = includeNotebook ? getNotebookSources(query, notebookPath, config.research.maxNotebookSnippets) : [];
+
+      const allSources = [...scholarSources, ...webSources, ...notebookSources].slice(0, 14);
+      if (!allSources.length) {
+        return res.status(400).json({
+          ok: false,
+          message: "No sources found. Enable research providers in Settings and try a more specific query.",
+        });
+      }
+
+      const apiKey = getGeminiApiKey(config);
+      if (!apiKey) {
+        return res.json({
+          ok: true,
+          query,
+          sources: allSources,
+          summary:
+            "Research sources found. Add Gemini API key to generate deep explanation and optional article output.",
+        });
+      }
+
+      const ai = new GoogleGenAI({ apiKey });
+      const synthesisPrompt = [
+        articleMode
+          ? "Create a deep-dive public-facing article in plain language."
+          : "Create a concise research brief with practical interpretation.",
+        "Explain what the research means, confidence caveats, and practical real-life use cases for ordinary people.",
+        "Keep claims aligned with provided sources only.",
+        formatSourcesAsPromptBlock("SOURCE MATERIAL", allSources),
+        `User topic: ${query}`,
+      ].join("\n\n");
+
+      const result = await generateWithModelFallback(
+        ai,
+        (config.ai.model || "gemini-3-flash-preview").trim(),
+        (config.ai.fallbackModel || "gemini-3-flash-preview").trim(),
+        [{ parts: [{ text: synthesisPrompt }] }],
+        0.55,
+      );
+
+      return res.json({
+        ok: true,
+        query,
+        articleMode,
+        sources: allSources,
+        output: result.text || "No output generated.",
+        modelUsed: result.modelUsed,
+        warning: result.warning,
+      });
+    } catch (error) {
+      return res.status(500).json({ ok: false, message: String(error) });
+    }
+  });
+
   app.post("/api/agent", async (req, res) => {
     try {
       const { prompt, context, parts = [] } = (req.body || {}) as AgentRequestBody;
@@ -1277,6 +1838,56 @@ ${reviewContent}`;
             }))
         : [];
 
+      const researchFlags = req.body?.research || {};
+      const autoResearch = /\b(latest|today|current|verify|fact|source|research|study|paper|scholar)\b/i.test(prompt);
+      const wantsWebResearch = Boolean(
+        config.research.webBrowsingEnabled && (researchFlags.web === true || (autoResearch && researchFlags.web !== false)),
+      );
+      const wantsScholarResearch = Boolean(
+        config.research.scholarEnabled &&
+          (researchFlags.scholar === true ||
+            /\b(scholar|scientific|journal|study|paper|evidence)\b/i.test(prompt)),
+      );
+      const wantsNotebookResearch = Boolean(researchFlags.notebook && config.research.notebookWorkspacePath);
+      const articleMode = Boolean(researchFlags.articleMode);
+
+      let webSources: WebSource[] = [];
+      let scholarSources: WebSource[] = [];
+      let notebookSources: WebSource[] = [];
+
+      if (wantsWebResearch) {
+        try {
+          webSources = await getWebSources(prompt, config.research.maxWebSources);
+        } catch (error) {
+          console.error("Web research failed:", error);
+        }
+      }
+      if (wantsScholarResearch) {
+        try {
+          scholarSources = await getScholarSources(prompt, Math.max(3, config.research.maxWebSources));
+        } catch (error) {
+          console.error("Scholar research failed:", error);
+        }
+      }
+      if (wantsNotebookResearch) {
+        try {
+          notebookSources = getNotebookSources(prompt, config.research.notebookWorkspacePath, config.research.maxNotebookSnippets);
+        } catch (error) {
+          console.error("Notebook research failed:", error);
+        }
+      }
+
+      const sources = [...scholarSources, ...webSources, ...notebookSources].slice(0, 16);
+      const researchPromptBlock = [
+        sources.length
+          ? "Use the research sources below. Cite source URLs inline when making factual claims."
+          : "No external research sources were loaded for this message.",
+        articleMode ? "User requested article-style output if suitable." : "User did not request article output by default.",
+        formatSourcesAsPromptBlock("RESEARCH SOURCES", sources),
+      ]
+        .join("\n")
+        .trim();
+
       const ai = new GoogleGenAI({ apiKey });
       const requestedModel = (config.ai.model || "gemini-3-flash-preview").trim();
       const fallbackModel = (config.ai.fallbackModel || "gemini-3-flash-preview").trim();
@@ -1288,6 +1899,7 @@ ${reviewContent}`;
           {
             parts: [
               { text: buildSystemPrompt(context, config.mcpRules || DEFAULT_RULES) },
+              { text: researchPromptBlock },
               ...safeParts,
               { text: `User request: ${prompt}` },
             ],
@@ -1300,6 +1912,12 @@ ${reviewContent}`;
         text: result.text || "No response from model.",
         modelUsed: result.modelUsed,
         warning: result.warning,
+        research: {
+          webCount: webSources.length,
+          scholarCount: scholarSources.length,
+          notebookCount: notebookSources.length,
+          totalSources: sources.length,
+        },
       });
     } catch (error) {
       console.error("Gemini API Error:", error);

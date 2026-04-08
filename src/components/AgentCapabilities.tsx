@@ -10,7 +10,7 @@ export default function AgentCapabilities() {
         </div>
         <div>
           <h3 className="font-bold text-xl liquid-title">Agent Intelligence & Capabilities</h3>
-          <p className="text-sm liquid-muted">Understanding what your MCP Agent can and cannot do.</p>
+          <p className="text-sm liquid-muted">Understanding what your Azat Studio agent can and cannot do.</p>
         </div>
       </div>
 
@@ -31,7 +31,7 @@ export default function AgentCapabilities() {
             <div className="flex gap-3 liquid-pill border rounded-xl p-3">
               <div className="mt-1 text-green-500"><Sparkles size={14} /></div>
               <p className="text-sm liquid-muted leading-relaxed">
-                <span className="liquid-title font-semibold">Multimodal Analysis:</span> I can process images, audio, and video files that you upload to the chat.
+                <span className="liquid-title font-semibold">Adaptive Research:</span> I can browse web sources, gather scholarly references, and combine them into factual answers.
               </p>
             </div>
             <div className="flex gap-3 liquid-pill border rounded-xl p-3">
@@ -43,7 +43,7 @@ export default function AgentCapabilities() {
             <div className="flex gap-3 liquid-pill border rounded-xl p-3">
               <div className="mt-1 text-green-500"><Sparkles size={14} /></div>
               <p className="text-sm liquid-muted leading-relaxed">
-                <span className="liquid-title font-semibold">Native Desktop App:</span> I have added Electron support. You can now build a real <code>.dmg</code> installer for your iMac. Check <code>TECH_DOCS.md</code> for the build commands.
+                <span className="liquid-title font-semibold">Notebook Workspace Bridge:</span> I can search large local research folders to mimic deep notebook workflows for long-form analysis.
               </p>
             </div>
           </div>
@@ -65,7 +65,7 @@ export default function AgentCapabilities() {
             <div className="flex gap-3 liquid-pill border rounded-xl p-3">
               <div className="mt-1 text-red-500"><ShieldAlert size={14} /></div>
               <p className="text-sm liquid-muted leading-relaxed">
-                <span className="liquid-title font-semibold">NotebookLM:</span> NotebookLM does not have a public API yet. I cannot "log in" to your account, but you can upload the same research files here.
+                <span className="liquid-title font-semibold">NotebookLM Account Access:</span> NotebookLM does not expose a direct public account API here. Use exported files/workspaces for integration.
               </p>
             </div>
             <div className="flex gap-3 liquid-pill border rounded-xl p-3">
@@ -81,7 +81,7 @@ export default function AgentCapabilities() {
       <div className="liquid-pill p-4 rounded-xl border flex gap-4 items-center">
         <BookOpen size={20} className="text-blue-600 shrink-0" />
         <p className="text-xs liquid-muted leading-relaxed">
-          <span className="liquid-title font-semibold">Pro Tip:</span> To give me context like NotebookLM, upload your research PDFs or text files using the paperclip icon in chat. I will keep that context during the conversation.
+          <span className="liquid-title font-semibold">Pro Tip:</span> Set a Notebook workspace in Settings, then enable <code>Notebook</code> in chat to search your large research files while you write.
         </p>
       </div>
     </div>

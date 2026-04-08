@@ -1,10 +1,10 @@
-# Technical Documentation: MCP Agentic Editor
+# Technical Documentation: Azat Studio
 
-This document provides technical details for developers and users running the MCP Agentic Editor locally on their iMac.
+This document provides technical details for developers and users running Azat Studio locally on their iMac.
 
 ## 🏗 Architecture Overview
 
-The MCP Agentic Editor is a full-stack application using **Express** as the backend and **Vite** as the frontend development server.
+Azat Studio is a full-stack application using **Express** as the backend and **Vite** as the frontend development server.
 
 ### 1. Backend (server.ts)
 The backend is an Express server that handles:

@@ -70,7 +70,7 @@ export default function InstallPrompt() {
         </div>
         <div>
           <h3 className="font-bold text-green-900">App Successfully Installed</h3>
-          <p className="text-sm text-green-700">The MCP Agentic Editor is now running as a native app on your device. You can find it in your Applications folder or Home Screen.</p>
+          <p className="text-sm text-green-700">Azat Studio is now running as a native app on your device. You can find it in your Applications folder or Home Screen.</p>
         </div>
       </div>
     );
