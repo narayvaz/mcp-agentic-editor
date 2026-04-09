@@ -57,6 +57,8 @@ interface SelfModProposalResponse {
   diffPreview: string;
   approvalCode: string;
   expiresAt: string;
+  autoApplied?: boolean;
+  backupPath?: string;
   modelUsed?: string;
   warning?: string;
   message?: string;
@@ -184,6 +186,7 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
   const [selfModTargetFile, setSelfModTargetFile] = useState('');
   const [selfModProposal, setSelfModProposal] = useState<SelfModProposalResponse | null>(null);
   const [selfModApprovalInput, setSelfModApprovalInput] = useState('');
+  const [selfModAutoApplyEnabled, setSelfModAutoApplyEnabled] = useState(false);
   const [isSelfModBusy, setIsSelfModBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -253,6 +256,20 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
     setSelfModProposal(null);
     setSelfModApprovalInput('');
   }, [activeThreadId]);
+
+  useEffect(() => {
+    const loadSelfModMode = async () => {
+      try {
+        const response = await fetch('/api/settings');
+        if (!response.ok) return;
+        const payload = (await response.json()) as { selfModification?: { autoApplyEnabled?: boolean } };
+        setSelfModAutoApplyEnabled(Boolean(payload.selfModification?.autoApplyEnabled));
+      } catch {
+        setSelfModAutoApplyEnabled(false);
+      }
+    };
+    loadSelfModMode();
+  }, []);
 
   const updateActiveThread = (updater: (thread: ChatThread) => ChatThread) => {
     if (!activeThread) return;
@@ -468,6 +485,7 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
           body: JSON.stringify({
             targetFile: selfModTargetFile.trim(),
             instruction: userPrompt,
+            autoApply: selfModAutoApplyEnabled,
           }),
         });
 
@@ -479,22 +497,41 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
           return;
         }
 
-        setSelfModProposal(payload);
-        setSelfModApprovalInput('');
-        pushAgentMessage(
-          [
-            `Self-mod proposal ready for \`${payload.targetFile}\`.`,
-            '',
-            `Summary: ${payload.summary}`,
-            `Approval code: \`${payload.approvalCode}\``,
-            `Expires: ${new Date(payload.expiresAt).toLocaleString()}`,
-            '',
-            'Diff preview:',
-            '```diff',
-            payload.diffPreview || 'No diff preview',
-            '```',
-          ].join('\n'),
-        );
+        if (payload.autoApplied) {
+          setSelfModProposal(null);
+          setSelfModApprovalInput('');
+          setSelfModMode(false);
+          pushAgentMessage(
+            [
+              `Self-mod auto-applied to \`${payload.targetFile}\`.`,
+              `Backup: \`${payload.backupPath || 'created'}\``,
+              '',
+              `Summary: ${payload.summary}`,
+              '',
+              'Diff preview:',
+              '```diff',
+              payload.diffPreview || 'No diff preview',
+              '```',
+            ].join('\n'),
+          );
+        } else {
+          setSelfModProposal(payload);
+          setSelfModApprovalInput('');
+          pushAgentMessage(
+            [
+              `Self-mod proposal ready for \`${payload.targetFile}\`.`,
+              '',
+              `Summary: ${payload.summary}`,
+              `Approval code: \`${payload.approvalCode}\``,
+              `Expires: ${new Date(payload.expiresAt).toLocaleString()}`,
+              '',
+              'Diff preview:',
+              '```diff',
+              payload.diffPreview || 'No diff preview',
+              '```',
+            ].join('\n'),
+          );
+        }
       } catch (error) {
         pushAgentMessage(`Self-mod proposal failed: ${String(error)}`);
       } finally {
@@ -749,7 +786,7 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
               className="w-full px-3 py-2 liquid-input rounded-lg text-xs"
             />
             <p className="text-[11px] liquid-muted">
-              Send a message describing the exact code change. The agent will create a proposal with diff + approval code.
+              Send a message describing the exact code change. Current mode: {selfModAutoApplyEnabled ? 'auto-apply with backup' : 'manual approval'}.
             </p>
           </div>
         )}

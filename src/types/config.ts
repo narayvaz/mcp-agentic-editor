@@ -34,6 +34,7 @@ export interface AiConfig {
 
 export interface SelfModificationConfig {
   enabled: boolean;
+  autoApplyEnabled: boolean;
   workspacePath: string;
 }
 

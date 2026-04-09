@@ -101,6 +101,7 @@ interface AiConfig {
 
 interface SelfModificationConfig {
   enabled: boolean;
+  autoApplyEnabled: boolean;
   workspacePath: string;
 }
 
@@ -138,11 +139,13 @@ interface SelfModProposeBody {
   workspacePath?: string;
   targetFile?: string;
   instruction?: string;
+  autoApply?: boolean;
 }
 
 interface SelfModApplyBody {
   proposalId?: string;
   approvalCode?: string;
+  autoApply?: boolean;
 }
 
 interface SelfModProposal {
@@ -207,6 +210,7 @@ function defaultConfig(): AppConfig {
     },
     selfModification: {
       enabled: false,
+      autoApplyEnabled: false,
       workspacePath: "",
     },
     research: {
@@ -406,6 +410,7 @@ function sanitizeConfigInput(input: Partial<AppConfig>): AppConfig {
   merged.ai.apiKey = (merged.ai.apiKey || base.ai.apiKey || "").trim();
   merged.selfModification.workspacePath = (merged.selfModification.workspacePath || base.selfModification.workspacePath || "").trim();
   merged.selfModification.enabled = Boolean(merged.selfModification.enabled);
+  merged.selfModification.autoApplyEnabled = Boolean(merged.selfModification.autoApplyEnabled);
   merged.research.notebookWorkspacePath = (merged.research.notebookWorkspacePath || "").trim();
   merged.research.webBrowsingEnabled = Boolean(merged.research.webBrowsingEnabled);
   merged.research.scholarEnabled = Boolean(merged.research.scholarEnabled);
@@ -514,6 +519,53 @@ function getBackupRoot(): string {
   return root;
 }
 
+function applySelfModProposal(proposal: SelfModProposal, mode: "manual" | "auto"): { targetFile: string; backupPath: string } {
+  if (proposal.status !== "pending") {
+    throw new Error(`Proposal is already ${proposal.status}.`);
+  }
+  if (!fs.existsSync(proposal.targetAbsolutePath) || !fs.statSync(proposal.targetAbsolutePath).isFile()) {
+    throw new Error("Target file no longer exists.");
+  }
+
+  const currentContent = fs.readFileSync(proposal.targetAbsolutePath, "utf-8");
+  if (sha256(currentContent) !== proposal.originalHash) {
+    throw new Error("Target file changed since proposal generation. Generate a fresh proposal first.");
+  }
+
+  const backupDir = path.join(getBackupRoot(), proposal.id);
+  const backupPath = path.join(backupDir, proposal.targetRelativePath);
+  fs.mkdirSync(path.dirname(backupPath), { recursive: true });
+  fs.writeFileSync(backupPath, currentContent, "utf-8");
+  fs.writeFileSync(
+    path.join(backupDir, "metadata.json"),
+    JSON.stringify(
+      {
+        createdAt: proposal.createdAt,
+        appliedAt: new Date().toISOString(),
+        targetFile: proposal.targetRelativePath,
+        targetAbsolutePath: proposal.targetAbsolutePath,
+        workspacePath: proposal.workspacePath,
+        instruction: proposal.instruction,
+        summary: proposal.summary,
+        approvalCode: proposal.approvalCode,
+        applyMode: mode,
+      },
+      null,
+      2,
+    ),
+    "utf-8",
+  );
+
+  fs.writeFileSync(proposal.targetAbsolutePath, proposal.updatedContent, "utf-8");
+  proposal.status = "applied";
+  proposal.backupPath = backupPath;
+
+  return {
+    targetFile: proposal.targetRelativePath,
+    backupPath,
+  };
+}
+
 function getSiteFromConfig(config: AppConfig, siteId?: string): WordPressSiteConfig {
   const resolvedId = siteId || config.activeSiteId;
   const site = resolvedId ? config.wordpressSites.find((candidate) => candidate.id === resolvedId) : config.wordpressSites[0];
@@ -609,6 +661,7 @@ Your goals:
 4. Assist with automations.
 5. Analyze images, audio, and video content provided for news value and SEO (ALT text, captions).
 6. When research sources are provided, ground factual claims in those sources and cite URLs inline.
+7. If asked to change this app's code/features/colors, explain that Azat Studio supports in-app self-modification workflows (manual or auto-apply if enabled), with backups before writes.
 
 Context: ${context || "No additional context provided."}`;
 }
@@ -995,6 +1048,7 @@ async function startServer() {
       hasHostingerConfig: Boolean(config.hostinger.baseUrl),
       selectedModel: config.ai.model,
       selfModificationEnabled: config.selfModification.enabled,
+      selfModificationAutoApplyEnabled: config.selfModification.autoApplyEnabled,
       webBrowsingEnabled: config.research.webBrowsingEnabled,
       scholarEnabled: config.research.scholarEnabled,
       keychainSupported: isKeychainSupported(),
@@ -1188,6 +1242,25 @@ async function startServer() {
         if (oldest) selfModProposals.delete(oldest.id);
       }
 
+      const autoApplyRequested = Boolean(body.autoApply) && config.selfModification.autoApplyEnabled;
+      if (autoApplyRequested) {
+        const applied = applySelfModProposal(proposal, "auto");
+        return res.json({
+          ok: true,
+          proposalId: proposal.id,
+          targetFile: proposal.targetRelativePath,
+          summary: proposal.summary,
+          diffPreview: proposal.diffPreview,
+          approvalCode: proposal.approvalCode,
+          expiresAt: proposal.expiresAt,
+          autoApplied: true,
+          backupPath: applied.backupPath,
+          modelUsed: result.modelUsed,
+          warning: result.warning,
+          message: `Auto-applied to ${applied.targetFile}. Backup created.`,
+        });
+      }
+
       return res.json({
         ok: true,
         proposalId: proposal.id,
@@ -1206,11 +1279,12 @@ async function startServer() {
 
   app.post("/api/self-mod/apply", (req, res) => {
     try {
+      const config = readConfig();
       const body = (req.body || {}) as SelfModApplyBody;
       const proposalId = String(body.proposalId || "").trim();
       const approvalCode = String(body.approvalCode || "").trim();
-      if (!proposalId || !approvalCode) {
-        return res.status(400).json({ ok: false, message: "proposalId and approvalCode are required." });
+      if (!proposalId) {
+        return res.status(400).json({ ok: false, message: "proposalId is required." });
       }
 
       const proposal = selfModProposals.get(proposalId);
@@ -1224,50 +1298,22 @@ async function startServer() {
         proposal.status = "expired";
         return res.status(410).json({ ok: false, message: "Proposal expired. Generate a new proposal." });
       }
-      if (approvalCode !== proposal.approvalCode) {
+      const allowAutoApply = config.selfModification.autoApplyEnabled && Boolean(body.autoApply);
+      if (!approvalCode && !allowAutoApply) {
+        return res.status(400).json({ ok: false, message: "approvalCode is required unless auto-apply mode is enabled." });
+      }
+      if (approvalCode && approvalCode !== proposal.approvalCode) {
         return res.status(403).json({ ok: false, message: "Approval code mismatch." });
       }
-      if (!fs.existsSync(proposal.targetAbsolutePath) || !fs.statSync(proposal.targetAbsolutePath).isFile()) {
-        return res.status(400).json({ ok: false, message: "Target file no longer exists." });
-      }
-      const currentContent = fs.readFileSync(proposal.targetAbsolutePath, "utf-8");
-      if (sha256(currentContent) !== proposal.originalHash) {
-        return res.status(409).json({
-          ok: false,
-          message: "Target file changed since proposal generation. Generate a fresh proposal first.",
-        });
-      }
 
-      const backupDir = path.join(getBackupRoot(), proposal.id);
-      const backupPath = path.join(backupDir, proposal.targetRelativePath);
-      fs.mkdirSync(path.dirname(backupPath), { recursive: true });
-      fs.writeFileSync(backupPath, currentContent, "utf-8");
-      fs.writeFileSync(
-        path.join(backupDir, "metadata.json"),
-        JSON.stringify(
-          {
-            createdAt: proposal.createdAt,
-            appliedAt: new Date().toISOString(),
-            targetFile: proposal.targetRelativePath,
-            instruction: proposal.instruction,
-            summary: proposal.summary,
-            approvalCode: proposal.approvalCode,
-          },
-          null,
-          2,
-        ),
-        "utf-8",
-      );
-
-      fs.writeFileSync(proposal.targetAbsolutePath, proposal.updatedContent, "utf-8");
-      proposal.status = "applied";
-      proposal.backupPath = backupPath;
+      const applied = applySelfModProposal(proposal, allowAutoApply ? "auto" : "manual");
 
       return res.json({
         ok: true,
-        message: `Applied changes to ${proposal.targetRelativePath}. Backup created.`,
-        targetFile: proposal.targetRelativePath,
-        backupPath,
+        message: `Applied changes to ${applied.targetFile}. Backup created.`,
+        targetFile: applied.targetFile,
+        backupPath: applied.backupPath,
+        applyMode: allowAutoApply ? "auto" : "manual",
       });
     } catch (error) {
       return res.status(500).json({ ok: false, message: String(error) });

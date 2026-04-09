@@ -41,12 +41,16 @@ interface ModelOption {
 }
 
 interface SelfModProposalResponse {
+  ok?: boolean;
   proposalId: string;
   targetFile: string;
   summary: string;
   diffPreview: string;
   approvalCode: string;
   expiresAt: string;
+  autoApplied?: boolean;
+  backupPath?: string;
+  message?: string;
   modelUsed?: string;
   warning?: string;
 }
@@ -182,11 +186,19 @@ export default function Settings() {
           workspacePath: config.selfModification.workspacePath,
           targetFile: selfModTargetFile,
           instruction: selfModInstruction,
+          autoApply: config.selfModification.autoApplyEnabled,
         }),
       );
-      setSelfModProposal(payload);
-      setSelfModApprovalInput('');
-      setMessage(`Proposal ready for ${payload.targetFile}. Enter approval code to apply.`);
+      if (payload.autoApplied) {
+        setSelfModProposal(null);
+        setSelfModApprovalInput('');
+        setSelfModInstruction('');
+        setMessage(payload.message || `Auto-applied change to ${payload.targetFile}. Backup: ${payload.backupPath || 'created'}`);
+      } else {
+        setSelfModProposal(payload);
+        setSelfModApprovalInput('');
+        setMessage(`Proposal ready for ${payload.targetFile}. Enter approval code to apply.`);
+      }
       setError('');
     } catch (proposalError) {
       setError(String(proposalError));
@@ -779,9 +791,9 @@ export default function Settings() {
             <Wrench size={20} />
           </div>
           <div>
-            <h3 className="font-bold liquid-title">Self-Modification (Strict Approval)</h3>
+            <h3 className="font-bold liquid-title">Self-Modification (Safe Mode)</h3>
             <p className="text-xs liquid-muted">
-              Generate one-file code change proposals, review preview diff, then apply only with approval code and automatic backup.
+              Generate one-file code change proposals with automatic backups. You can keep manual approval or enable guarded auto-apply.
             </p>
           </div>
         </div>
@@ -800,6 +812,29 @@ export default function Settings() {
           />
           Enable in-app self-modification workflow
         </label>
+
+        <label className="flex items-center gap-3 text-sm liquid-title">
+          <input
+            type="checkbox"
+            checked={config.selfModification.autoApplyEnabled}
+            onChange={(e) =>
+              setConfig({
+                ...config,
+                selfModification: { ...config.selfModification, autoApplyEnabled: e.target.checked },
+              })
+            }
+            disabled={!config.selfModification.enabled}
+            className="h-4 w-4 rounded border-white/50 bg-white/15 accent-sky-500 disabled:opacity-50"
+          />
+          Auto-apply generated proposals (still creates backup before write)
+        </label>
+
+        {config.selfModification.autoApplyEnabled && (
+          <div className="p-3 rounded-xl border liquid-note-warn text-xs liquid-title">
+            Auto-apply writes changes immediately after proposal generation. Keep this only for trusted workflows and review backups in
+            <code> ~/.mcp-agentic-editor/backups</code>.
+          </div>
+        )}
 
         <div className="grid grid-cols-1 gap-3">
           <input
@@ -834,7 +869,7 @@ export default function Settings() {
             className="flex items-center gap-2 px-4 py-2 liquid-pill border rounded-lg text-xs font-bold liquid-title disabled:opacity-50"
           >
             <Wrench size={12} />
-            {isSelfModBusy ? 'Generating Proposal...' : 'Generate Proposal'}
+            {isSelfModBusy ? 'Running Self-Mod...' : config.selfModification.autoApplyEnabled ? 'Generate & Auto-Apply' : 'Generate Proposal'}
           </button>
         </div>
 
