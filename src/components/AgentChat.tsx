@@ -18,7 +18,7 @@ import {
   RotateCcw,
   Wrench,
 } from 'lucide-react';
-import { getAgentResponse, AgentPart, AgentResearchOptions } from '../services/gemini';
+import { getAgentResponse, AgentPart, AgentResearchOptions, SelfModificationExecution } from '../services/gemini';
 import ReactMarkdown from 'react-markdown';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -62,6 +62,7 @@ interface SelfModProposalResponse {
   modelUsed?: string;
   warning?: string;
   message?: string;
+  execution?: SelfModificationExecution;
 }
 
 interface SelfModApplyResponse {
@@ -69,6 +70,7 @@ interface SelfModApplyResponse {
   message: string;
   targetFile?: string;
   backupPath?: string;
+  execution?: SelfModificationExecution;
 }
 
 const THREADS_STORAGE_KEY = 'mcp-agent-chat-threads-v2';
@@ -104,6 +106,25 @@ function buildThreadTitleFromPrompt(prompt: string): string {
   const cleaned = prompt.replace(/\s+/g, ' ').trim();
   if (!cleaned) return 'New Chat';
   return cleaned.length > 42 ? `${cleaned.slice(0, 42)}...` : cleaned;
+}
+
+function formatExecutionAudit(execution?: SelfModificationExecution): string {
+  if (!execution) return '';
+  const steps = execution.steps.map((step) => {
+    const status = step.status === 'ok' ? 'OK' : step.status === 'error' ? 'ERR' : 'SKIP';
+    return `- [${status}] ${step.id}: ${step.detail}`;
+  });
+  return [
+    'Execution audit:',
+    `- mode: ${execution.mode}`,
+    `- target: ${execution.targetFile}`,
+    `- backup: ${execution.backupPath || 'not created'}`,
+    `- rollback: ${execution.rolledBack ? 'yes' : 'no'}`,
+    `- restart scheduled: ${execution.restartScheduled ? 'yes' : 'no'}`,
+    `- success: ${execution.success ? 'yes' : 'no'}`,
+    ...(execution.error ? [`- error: ${execution.error}`] : []),
+    ...(steps.length ? ['- steps:', ...steps] : []),
+  ].join('\n');
 }
 
 function migrateLegacyMessages(raw: string | null): ChatThread[] {
@@ -421,8 +442,11 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
         pushAgentMessage(`Self-mod apply failed: ${payload.message || 'Unknown error'}`);
         return;
       }
+      const audit = formatExecutionAudit(payload.execution);
       pushAgentMessage(
-        `Self-mod applied to \`${payload.targetFile || selfModProposal.targetFile}\`.\n\nBackup: \`${payload.backupPath || 'created'}\``,
+        [payload.message || `Self-mod applied to \`${payload.targetFile || selfModProposal.targetFile}\`.`, audit]
+          .filter(Boolean)
+          .join('\n\n'),
       );
       setSelfModProposal(null);
       setSelfModApprovalInput('');
@@ -501,10 +525,11 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
           setSelfModProposal(null);
           setSelfModApprovalInput('');
           setSelfModMode(false);
+          const audit = formatExecutionAudit(payload.execution);
           pushAgentMessage(
             [
-              `Self-mod auto-applied to \`${payload.targetFile}\`.`,
-              `Backup: \`${payload.backupPath || 'created'}\``,
+              payload.message || `Self-mod auto-applied to \`${payload.targetFile}\`.`,
+              audit,
               '',
               `Summary: ${payload.summary}`,
               '',
@@ -563,7 +588,8 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
       .join('\n\n');
 
     const response = await getAgentResponse(userPrompt, mergedContext, parts, researchMode);
-    pushAgentMessage(response || 'No response');
+    const audit = formatExecutionAudit(response.selfModification?.execution);
+    pushAgentMessage([response.text || 'No response', audit].filter(Boolean).join('\n\n'));
 
     setIsTyping(false);
   };

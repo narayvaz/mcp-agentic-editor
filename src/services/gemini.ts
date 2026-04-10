@@ -13,11 +13,35 @@ export interface AgentResearchOptions {
   articleMode?: boolean;
 }
 
-interface AgentResponse {
+export interface SelfModificationExecutionStep {
+  id: string;
+  status: 'ok' | 'error' | 'skipped';
+  detail: string;
+}
+
+export interface SelfModificationExecution {
+  mode: 'manual' | 'auto';
+  success: boolean;
+  targetFile: string;
+  backupPath: string | null;
+  restartScheduled: boolean;
+  rolledBack: boolean;
+  steps: SelfModificationExecutionStep[];
+  error?: string;
+}
+
+export interface AgentResponse {
   text?: string;
   error?: string;
   modelUsed?: string;
   warning?: string;
+  selfModification?: {
+    attempted?: boolean;
+    ok?: boolean;
+    targetFile?: string;
+    backupPath?: string;
+    execution?: SelfModificationExecution;
+  };
 }
 
 export const getAgentResponse = async (
@@ -25,7 +49,7 @@ export const getAgentResponse = async (
   context?: string,
   parts: AgentPart[] = [],
   research?: AgentResearchOptions,
-) => {
+): Promise<AgentResponse> => {
   try {
     const response = await fetch("/api/agent", {
       method: "POST",
@@ -41,18 +65,20 @@ export const getAgentResponse = async (
     });
 
     const data = (await response.json()) as AgentResponse;
+    const text = data.warning && data.text ? `${data.warning}\n\n${data.text}` : data.text || 'No response from model.';
     if (!response.ok) {
-      console.error("Agent API Error:", data.error || response.statusText);
-      return data.text || "I'm sorry, I encountered an error while processing your request.";
+      console.error('Agent API Error:', data.error || response.statusText);
     }
 
-    if (data.warning && data.text) {
-      return `${data.warning}\n\n${data.text}`;
-    }
-
-    return data.text || "No response from model.";
+    return {
+      ...data,
+      text,
+    } as AgentResponse;
   } catch (error) {
     console.error("Agent API Network Error:", error);
-    return "I'm sorry, I encountered an error while processing your request.";
+    return {
+      text: "I'm sorry, I encountered an error while processing your request.",
+      error: String(error),
+    } as AgentResponse;
   }
 };

@@ -129,12 +129,8 @@ export default function App() {
               <Bot size={18} />
               <span className="hidden sm:inline">Ask Studio</span>
             </button>
-            <div className="w-8 h-8 rounded-full liquid-pill border overflow-hidden">
-              <img 
-                src="https://api.dicebear.com/7.x/avataaars/svg?seed=azat" 
-                alt="User" 
-                referrerPolicy="no-referrer"
-              />
+            <div className="w-8 h-8 rounded-full liquid-pill border flex items-center justify-center text-sky-600">
+              <Bot size={20} />
             </div>
           </div>
         </header>

@@ -163,8 +163,25 @@ interface SelfModProposal {
   originalContent: string;
   updatedContent: string;
   approvalCode: string;
-  status: "pending" | "applied" | "expired";
+  status: "pending" | "applied" | "expired" | "rolled_back";
   backupPath?: string;
+}
+
+interface SelfModExecutionStep {
+  id: string;
+  status: "ok" | "error" | "skipped";
+  detail: string;
+}
+
+interface SelfModExecution {
+  mode: "manual" | "auto";
+  success: boolean;
+  targetFile: string;
+  backupPath: string | null;
+  restartScheduled: boolean;
+  rolledBack: boolean;
+  steps: SelfModExecutionStep[];
+  error?: string;
 }
 
 const selfModProposals = new Map<string, SelfModProposal>();
@@ -519,6 +536,51 @@ function getBackupRoot(): string {
   return root;
 }
 
+function createSelfModExecution(mode: "manual" | "auto", targetFile: string): SelfModExecution {
+  return {
+    mode,
+    success: false,
+    targetFile,
+    backupPath: null,
+    restartScheduled: false,
+    rolledBack: false,
+    steps: [],
+  };
+}
+
+function markSelfModStep(
+  execution: SelfModExecution,
+  id: SelfModExecutionStep["id"],
+  status: SelfModExecutionStep["status"],
+  detail: string,
+) {
+  execution.steps.push({ id, status, detail });
+}
+
+function verifyWrittenSelfModFile(targetPath: string, expectedHash: string): { ok: boolean; detail: string } {
+  if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isFile()) {
+    return { ok: false, detail: "Target file missing after write." };
+  }
+  const content = fs.readFileSync(targetPath, "utf-8");
+  if (!content.trim()) {
+    return { ok: false, detail: "Target file became empty after write." };
+  }
+  if (sha256(content) !== expectedHash) {
+    return { ok: false, detail: "Written file hash mismatch after apply." };
+  }
+
+  const ext = path.extname(targetPath).toLowerCase();
+  if (ext === ".json") {
+    try {
+      JSON.parse(content);
+    } catch (error) {
+      return { ok: false, detail: `JSON verification failed: ${String(error)}` };
+    }
+  }
+
+  return { ok: true, detail: "Write verification passed." };
+}
+
 let relaunchScheduled = false;
 
 function scheduleElectronRelaunch(delayMs = 1800): boolean {
@@ -649,6 +711,7 @@ async function selectTargetFileForSelfMod(
     (config.ai.fallbackModel || "gemini-3-flash-preview").trim(),
     [{ parts: [{ text: selectorPrompt }] }],
     0.1,
+    20_000,
   );
   const parsed = extractJsonObject(selection.text || "");
   const fromModel = typeof parsed?.targetFile === "string" ? parsed.targetFile.trim() : "";
@@ -723,6 +786,7 @@ async function generateSelfModProposal(
       },
     ],
     0.2,
+    45_000,
   );
 
   const parsed = extractJsonObject(result.text || "");
@@ -770,107 +834,228 @@ async function generateSelfModProposal(
   };
 }
 
-async function runAutonomousSelfModification(config: AppConfig, prompt: string): Promise<{
-  ok: boolean;
-  text: string;
-  targetFile?: string;
-  backupPath?: string;
-}> {
-  if (!config.selfModification.enabled) {
-    return {
-      ok: false,
-      text: "Self-modification is disabled. Enable it in Settings first.",
-    };
-  }
-  if (!config.selfModification.autoApplyEnabled) {
-    return {
-      ok: false,
-      text: "Auto-apply self-modification is disabled. Enable it in Settings > Self-Modification.",
-    };
-  }
-
-  const workspacePath = resolveWorkspacePath(config, config.selfModification.workspacePath);
-  const apiKey = getGeminiApiKey(config);
-  if (!apiKey) {
-    return {
-      ok: false,
-      text: "Gemini API key is missing. Add it in Settings > AI Model Routing or .env.",
-    };
-  }
-
-  const ai = new GoogleGenAI({ apiKey });
-  const targetFile = await selectTargetFileForSelfMod(ai, config, prompt, workspacePath);
-  const { proposal, modelUsed, warning } = await generateSelfModProposal(config, {
-    workspacePath,
-    targetFile,
-    instruction: prompt,
-    autoApply: true,
+function formatSelfModExecutionMessage(execution: SelfModExecution, modelUsed?: string, warning?: string): string {
+  const stepLines = execution.steps.map((step) => {
+    const prefix = step.status === "ok" ? "OK" : step.status === "error" ? "ERR" : "SKIP";
+    return `[${prefix}] ${step.id}: ${step.detail}`;
   });
-
-  const applied = applySelfModProposal(proposal, "auto");
-  const restartScheduled = scheduleElectronRelaunch(1800);
-  const messageLines = [
-    `Self-modification applied automatically.`,
-    `Target file: ${applied.targetFile}`,
-    `Backup: ${applied.backupPath}`,
-    `Model used: ${modelUsed}`,
+  const header = execution.success ? "Self-modification completed." : "Self-modification failed.";
+  const lines = [
+    header,
+    `Mode: ${execution.mode}`,
+    `Target file: ${execution.targetFile}`,
+    execution.backupPath ? `Backup: ${execution.backupPath}` : "Backup: not created",
+    execution.rolledBack ? "Rollback: performed" : "Rollback: not needed",
+    execution.restartScheduled ? "Restart: scheduled" : "Restart: not scheduled",
+    modelUsed ? `Model used: ${modelUsed}` : "",
     warning ? `Warning: ${warning}` : "",
-    restartScheduled ? "App restart scheduled now to load changes." : "Restart not scheduled automatically in this runtime.",
+    execution.error ? `Error: ${execution.error}` : "",
+    stepLines.length ? `Steps:\n${stepLines.join("\n")}` : "",
   ].filter(Boolean);
-
-  return {
-    ok: true,
-    text: messageLines.join("\n"),
-    targetFile: applied.targetFile,
-    backupPath: applied.backupPath,
-  };
+  return lines.join("\n");
 }
 
-function applySelfModProposal(proposal: SelfModProposal, mode: "manual" | "auto"): { targetFile: string; backupPath: string } {
+function executeSelfModApplication(proposal: SelfModProposal, mode: "manual" | "auto", requestRestart: boolean): SelfModExecution {
+  const execution = createSelfModExecution(mode, proposal.targetRelativePath);
+  let currentContent = "";
+
   if (proposal.status !== "pending") {
-    throw new Error(`Proposal is already ${proposal.status}.`);
+    execution.error = `Proposal is already ${proposal.status}.`;
+    markSelfModStep(execution, "precheck", "error", execution.error);
+    return execution;
   }
   if (!fs.existsSync(proposal.targetAbsolutePath) || !fs.statSync(proposal.targetAbsolutePath).isFile()) {
-    throw new Error("Target file no longer exists.");
+    execution.error = "Target file no longer exists.";
+    markSelfModStep(execution, "precheck", "error", execution.error);
+    return execution;
   }
 
-  const currentContent = fs.readFileSync(proposal.targetAbsolutePath, "utf-8");
+  currentContent = fs.readFileSync(proposal.targetAbsolutePath, "utf-8");
   if (sha256(currentContent) !== proposal.originalHash) {
-    throw new Error("Target file changed since proposal generation. Generate a fresh proposal first.");
+    execution.error = "Target file changed since proposal generation. Generate a fresh proposal first.";
+    markSelfModStep(execution, "precheck", "error", execution.error);
+    return execution;
   }
+  markSelfModStep(execution, "precheck", "ok", "Target file and hash verified.");
 
   const backupDir = path.join(getBackupRoot(), proposal.id);
   const backupPath = path.join(backupDir, proposal.targetRelativePath);
-  fs.mkdirSync(path.dirname(backupPath), { recursive: true });
-  fs.writeFileSync(backupPath, currentContent, "utf-8");
-  fs.writeFileSync(
-    path.join(backupDir, "metadata.json"),
-    JSON.stringify(
-      {
-        createdAt: proposal.createdAt,
-        appliedAt: new Date().toISOString(),
-        targetFile: proposal.targetRelativePath,
-        targetAbsolutePath: proposal.targetAbsolutePath,
-        workspacePath: proposal.workspacePath,
-        instruction: proposal.instruction,
-        summary: proposal.summary,
-        approvalCode: proposal.approvalCode,
-        applyMode: mode,
-      },
-      null,
-      2,
-    ),
-    "utf-8",
-  );
+  try {
+    fs.mkdirSync(path.dirname(backupPath), { recursive: true });
+    fs.writeFileSync(backupPath, currentContent, "utf-8");
+    fs.writeFileSync(
+      path.join(backupDir, "metadata.json"),
+      JSON.stringify(
+        {
+          createdAt: proposal.createdAt,
+          appliedAt: new Date().toISOString(),
+          targetFile: proposal.targetRelativePath,
+          targetAbsolutePath: proposal.targetAbsolutePath,
+          workspacePath: proposal.workspacePath,
+          instruction: proposal.instruction,
+          summary: proposal.summary,
+          approvalCode: proposal.approvalCode,
+          applyMode: mode,
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+    execution.backupPath = backupPath;
+    markSelfModStep(execution, "backup", "ok", `Backup created at ${backupPath}`);
+  } catch (error) {
+    execution.error = `Failed to create backup: ${String(error)}`;
+    markSelfModStep(execution, "backup", "error", execution.error);
+    return execution;
+  }
 
-  fs.writeFileSync(proposal.targetAbsolutePath, proposal.updatedContent, "utf-8");
+  try {
+    fs.writeFileSync(proposal.targetAbsolutePath, proposal.updatedContent, "utf-8");
+    markSelfModStep(execution, "write", "ok", "Updated content written.");
+  } catch (error) {
+    execution.error = `Failed to write updated file: ${String(error)}`;
+    markSelfModStep(execution, "write", "error", execution.error);
+    return execution;
+  }
+
+  const verification = verifyWrittenSelfModFile(proposal.targetAbsolutePath, proposal.updatedHash);
+  if (!verification.ok) {
+    markSelfModStep(execution, "verify", "error", verification.detail);
+    try {
+      fs.writeFileSync(proposal.targetAbsolutePath, currentContent, "utf-8");
+      proposal.status = "rolled_back";
+      execution.rolledBack = true;
+      markSelfModStep(execution, "rollback", "ok", "Original file restored from in-memory backup.");
+    } catch (rollbackError) {
+      execution.error = `Verification failed and rollback failed: ${verification.detail}; rollback error: ${String(rollbackError)}`;
+      markSelfModStep(execution, "rollback", "error", execution.error);
+      return execution;
+    }
+    execution.error = `Verification failed after write: ${verification.detail}`;
+    return execution;
+  }
+  markSelfModStep(execution, "verify", "ok", verification.detail);
+
   proposal.status = "applied";
   proposal.backupPath = backupPath;
+  execution.success = true;
 
-  return {
-    targetFile: proposal.targetRelativePath,
-    backupPath,
-  };
+  if (requestRestart && mode === "auto") {
+    execution.restartScheduled = scheduleElectronRelaunch(1800);
+    markSelfModStep(
+      execution,
+      "restart",
+      execution.restartScheduled ? "ok" : "skipped",
+      execution.restartScheduled ? "Electron relaunch scheduled." : "Relaunch unavailable in this runtime.",
+    );
+  } else {
+    markSelfModStep(execution, "restart", "skipped", "Restart requested only for auto mode.");
+  }
+
+  return execution;
+}
+
+async function runAutonomousSelfModification(config: AppConfig, prompt: string): Promise<{
+  ok: boolean;
+  text: string;
+  execution: SelfModExecution;
+  targetFile?: string;
+  backupPath?: string;
+}> {
+  const execution = createSelfModExecution("auto", "(pending)");
+
+  if (!config.selfModification.enabled) {
+    execution.error = "Self-modification is disabled. Enable it in Settings first.";
+    markSelfModStep(execution, "precheck", "error", execution.error);
+    return {
+      ok: false,
+      text: formatSelfModExecutionMessage(execution),
+      execution,
+    };
+  }
+  if (!config.selfModification.autoApplyEnabled) {
+    execution.error = "Auto-apply self-modification is disabled. Enable it in Settings > Self-Modification.";
+    markSelfModStep(execution, "precheck", "error", execution.error);
+    return {
+      ok: false,
+      text: formatSelfModExecutionMessage(execution),
+      execution,
+    };
+  }
+
+  let workspacePath = "";
+  try {
+    workspacePath = resolveWorkspacePath(config, config.selfModification.workspacePath);
+    markSelfModStep(execution, "workspace", "ok", `Workspace resolved: ${workspacePath}`);
+  } catch (error) {
+    execution.error = String(error);
+    markSelfModStep(execution, "workspace", "error", execution.error);
+    return {
+      ok: false,
+      text: formatSelfModExecutionMessage(execution),
+      execution,
+    };
+  }
+
+  const apiKey = getGeminiApiKey(config);
+  if (!apiKey) {
+    execution.error = "Gemini API key is missing. Add it in Settings > AI Model Routing or .env.";
+    markSelfModStep(execution, "model", "error", execution.error);
+    return {
+      ok: false,
+      text: formatSelfModExecutionMessage(execution),
+      execution,
+    };
+  }
+  markSelfModStep(execution, "model", "ok", "Gemini key available.");
+
+  const ai = new GoogleGenAI({ apiKey });
+  let targetFile = "";
+  try {
+    targetFile = await selectTargetFileForSelfMod(ai, config, prompt, workspacePath);
+    execution.targetFile = targetFile;
+    markSelfModStep(execution, "target-selection", "ok", `Selected target file ${targetFile}`);
+  } catch (error) {
+    execution.error = `Failed to select target file: ${String(error)}`;
+    markSelfModStep(execution, "target-selection", "error", execution.error);
+    return {
+      ok: false,
+      text: formatSelfModExecutionMessage(execution),
+      execution,
+    };
+  }
+
+  try {
+    const { proposal, modelUsed, warning } = await generateSelfModProposal(config, {
+      workspacePath,
+      targetFile,
+      instruction: prompt,
+      autoApply: true,
+    });
+    markSelfModStep(execution, "proposal", "ok", `Proposal generated: ${proposal.id}`);
+
+    const applied = executeSelfModApplication(proposal, "auto", true);
+    const merged: SelfModExecution = {
+      ...applied,
+      steps: [...execution.steps, ...applied.steps],
+    };
+    return {
+      ok: merged.success,
+      text: formatSelfModExecutionMessage(merged, modelUsed, warning),
+      execution: merged,
+      targetFile: merged.targetFile,
+      backupPath: merged.backupPath || undefined,
+    };
+  } catch (error) {
+    execution.error = `Failed to generate proposal: ${String(error)}`;
+    markSelfModStep(execution, "proposal", "error", execution.error);
+    return {
+      ok: false,
+      text: formatSelfModExecutionMessage(execution),
+      execution,
+    };
+  }
 }
 
 function getSiteFromConfig(config: AppConfig, siteId?: string): WordPressSiteConfig {
@@ -968,7 +1153,7 @@ Your goals:
 4. Assist with automations.
 5. Analyze images, audio, and video content provided for news value and SEO (ALT text, captions).
 6. When research sources are provided, ground factual claims in those sources and cite URLs inline.
-7. If asked to change this app's code/features/colors and auto-apply is enabled, execute self-modification workflow with backup + restart; otherwise explain what setting is missing.
+7. Self-modification is executed by the backend workflow, not by text alone. Never claim code/UI was changed unless a backend execution audit confirms success. If user asks for self-change and no execution audit is available, clearly state what is missing.
 
 Context: ${context || "No additional context provided."}`;
 }
@@ -1000,13 +1185,21 @@ async function generateWithModelFallback(
   fallbackModel: string,
   contents: Array<{ parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> }>,
   temperature: number,
+  timeoutMs = 90_000,
 ): Promise<{ text: string; modelUsed: string; fallback: boolean; warning?: string }> {
+  const runModel = async (model: string) =>
+    withTimeout(
+      ai.models.generateContent({
+        model,
+        contents,
+        config: { temperature },
+      }),
+      timeoutMs,
+      `Model ${model} timed out after ${Math.floor(timeoutMs / 1000)}s.`,
+    );
+
   try {
-    const response = await ai.models.generateContent({
-      model: requestedModel,
-      contents,
-      config: { temperature },
-    });
+    const response = await runModel(requestedModel);
     return {
       text: response.text || "No response from model.",
       modelUsed: requestedModel,
@@ -1016,17 +1209,27 @@ async function generateWithModelFallback(
     if (!fallbackModel || fallbackModel === requestedModel) {
       throw primaryError;
     }
-    const response = await ai.models.generateContent({
-      model: fallbackModel,
-      contents,
-      config: { temperature },
-    });
+    const response = await runModel(fallbackModel);
     return {
       text: response.text || "No response from model.",
       modelUsed: fallbackModel,
       fallback: true,
       warning: `Model ${requestedModel} failed and fallback model ${fallbackModel} was used.`,
     };
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+  let timeoutRef: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutRef = setTimeout(() => reject(new Error(timeoutMessage)), Math.max(5000, timeoutMs));
+      }),
+    ]);
+  } finally {
+    if (timeoutRef) clearTimeout(timeoutRef);
   }
 }
 
@@ -1443,22 +1646,23 @@ async function startServer() {
 
       const autoApplyRequested = Boolean(body.autoApply) && config.selfModification.autoApplyEnabled;
       if (autoApplyRequested) {
-        const applied = applySelfModProposal(proposal, "auto");
-        const restartScheduled = scheduleElectronRelaunch(1800);
-        return res.json({
-          ok: true,
+        const execution = executeSelfModApplication(proposal, "auto", true);
+        const statusCode = execution.success ? 200 : 409;
+        return res.status(statusCode).json({
+          ok: execution.success,
           proposalId: proposal.id,
           targetFile: proposal.targetRelativePath,
           summary: proposal.summary,
           diffPreview: proposal.diffPreview,
           approvalCode: proposal.approvalCode,
           expiresAt: proposal.expiresAt,
-          autoApplied: true,
-          backupPath: applied.backupPath,
+          autoApplied: execution.success,
+          backupPath: execution.backupPath,
+          execution,
           modelUsed,
           warning,
-          restartScheduled,
-          message: `Auto-applied to ${applied.targetFile}. Backup created.${restartScheduled ? " App restart scheduled." : ""}`,
+          restartScheduled: execution.restartScheduled,
+          message: formatSelfModExecutionMessage(execution, modelUsed, warning),
         });
       }
 
@@ -1509,16 +1713,16 @@ async function startServer() {
         return res.status(403).json({ ok: false, message: "Approval code mismatch." });
       }
 
-      const applied = applySelfModProposal(proposal, allowAutoApply ? "auto" : "manual");
-      const restartScheduled = allowAutoApply ? scheduleElectronRelaunch(1800) : false;
-
-      return res.json({
-        ok: true,
-        message: `Applied changes to ${applied.targetFile}. Backup created.${restartScheduled ? " App restart scheduled." : ""}`,
-        targetFile: applied.targetFile,
-        backupPath: applied.backupPath,
+      const execution = executeSelfModApplication(proposal, allowAutoApply ? "auto" : "manual", allowAutoApply);
+      const statusCode = execution.success ? 200 : 409;
+      return res.status(statusCode).json({
+        ok: execution.success,
+        message: formatSelfModExecutionMessage(execution),
+        targetFile: execution.targetFile,
+        backupPath: execution.backupPath,
+        execution,
         applyMode: allowAutoApply ? "auto" : "manual",
-        restartScheduled,
+        restartScheduled: execution.restartScheduled,
       });
     } catch (error) {
       return res.status(500).json({ ok: false, message: String(error) });
@@ -2084,6 +2288,7 @@ ${reviewContent}`;
             ok: selfModResult.ok,
             targetFile: selfModResult.targetFile,
             backupPath: selfModResult.backupPath,
+            execution: selfModResult.execution,
           },
         });
       }

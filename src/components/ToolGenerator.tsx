@@ -32,8 +32,9 @@ export default function ToolGenerator() {
     }`;
     
     const result = await getAgentResponse(prompt);
+    const resultText = result.text || '';
     try {
-      const jsonStr = result?.match(/\{[\s\S]*\}/)?.[0];
+      const jsonStr = resultText.match(/\{[\s\S]*\}/)?.[0];
       if (jsonStr) {
         const parsed = JSON.parse(jsonStr);
         setTools(prev => [
@@ -42,7 +43,7 @@ export default function ToolGenerator() {
             id: Date.now().toString(),
             name: parsed.name || 'Generated Tool',
             description: parsed.description || newToolPrompt,
-            code: parsed.code || (typeof result === 'string' ? result : '// No code summary returned'),
+            code: parsed.code || resultText || '// No code summary returned',
           },
         ]);
       } else {
@@ -52,7 +53,7 @@ export default function ToolGenerator() {
             id: Date.now().toString(),
             name: `Tool: ${newToolPrompt.slice(0, 32)}`,
             description: newToolPrompt,
-            code: typeof result === 'string' ? result : '// No code summary returned',
+            code: resultText || '// No code summary returned',
           },
         ]);
       }
@@ -64,7 +65,7 @@ export default function ToolGenerator() {
           id: Date.now().toString(),
           name: `Tool: ${newToolPrompt.slice(0, 32)}`,
           description: newToolPrompt,
-          code: typeof result === 'string' ? result : '// No code summary returned',
+          code: resultText || '// No code summary returned',
         },
       ]);
     }
