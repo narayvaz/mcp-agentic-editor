@@ -552,7 +552,17 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
       });
     }
 
-    const response = await getAgentResponse(userPrompt, context, parts, researchMode);
+    const recentConversation = [...activeThread.messages.slice(-12), userMessage]
+      .map((message) => `${message.role.toUpperCase()}: ${message.content}`)
+      .join('\n');
+    const mergedContext = [
+      context || '',
+      recentConversation ? `Recent conversation context:\n${recentConversation}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+
+    const response = await getAgentResponse(userPrompt, mergedContext, parts, researchMode);
     pushAgentMessage(response || 'No response');
 
     setIsTyping(false);

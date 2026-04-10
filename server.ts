@@ -519,6 +519,313 @@ function getBackupRoot(): string {
   return root;
 }
 
+let relaunchScheduled = false;
+
+function scheduleElectronRelaunch(delayMs = 1800): boolean {
+  if (!process.versions.electron || relaunchScheduled) return false;
+  relaunchScheduled = true;
+  setTimeout(async () => {
+    try {
+      const electronModule = (await import("electron")) as any;
+      const appRef = electronModule?.app || electronModule?.default?.app;
+      if (appRef && typeof appRef.relaunch === "function" && typeof appRef.exit === "function") {
+        appRef.relaunch();
+        appRef.exit(0);
+        return;
+      }
+    } catch (error) {
+      console.error("Failed to relaunch electron app:", error);
+    }
+    relaunchScheduled = false;
+  }, Math.max(500, delayMs));
+  return true;
+}
+
+function isAutonomousSelfModIntent(prompt: string): boolean {
+  const text = (prompt || "").toLowerCase();
+  if (!text.trim()) return false;
+
+  const explicitExecute = /(do it|go ahead|proceed|apply it|make the change|initiate self-mod|initiate self modification|start self-mod|start self modification)/i.test(
+    text,
+  );
+  const hasSelfTarget = /(yourself|itself|your app|app itself|azat studio|agent|this app|own ui|own features|self-mod|your (icon|icons|ui|feature|features|color|colors|code))/i.test(
+    text,
+  );
+  if (explicitExecute && hasSelfTarget) return true;
+
+  const looksLikeCapabilityQuestion = /^\s*(can|could|are you|do you)\b/i.test(text) && text.includes("?");
+  const asksCapabilityOnly =
+    (/(can you|could you|are you able|are you capable|ability)/i.test(text) || looksLikeCapabilityQuestion) &&
+    !/(do it|do this|proceed|go ahead|apply|initiate|start now|make it now)/i.test(text);
+  if (asksCapabilityOnly) return false;
+
+  const hasActionVerb = /(change|modify|update|improve|fix|redesign|restyle|replace|add|remove|implement)/i.test(text);
+  return hasActionVerb && hasSelfTarget;
+}
+
+function listWorkspaceCodeFiles(workspacePath: string, maxFiles = 260): string[] {
+  const allowedExt = new Set([".ts", ".tsx", ".js", ".jsx", ".cjs", ".mjs", ".css", ".json", ".md", ".html"]);
+  const skipDirs = new Set([".git", "node_modules", "dist", "dist-electron", "dist-server", "release", ".next", ".cache"]);
+  const out: string[] = [];
+  const root = path.resolve(workspacePath);
+
+  const walk = (dir: string) => {
+    if (out.length >= maxFiles) return;
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (out.length >= maxFiles) return;
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (skipDirs.has(entry.name)) continue;
+        walk(fullPath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const ext = path.extname(entry.name).toLowerCase();
+      if (!allowedExt.has(ext)) continue;
+      out.push(path.relative(root, fullPath));
+    }
+  };
+
+  walk(root);
+  return out.sort();
+}
+
+async function selectTargetFileForSelfMod(
+  ai: GoogleGenAI,
+  config: AppConfig,
+  prompt: string,
+  workspacePath: string,
+): Promise<string> {
+  const explicitPathMatch = prompt.match(/([A-Za-z0-9_./-]+\.(?:tsx?|jsx?|cjs|mjs|css|json|md|html))/);
+  if (explicitPathMatch?.[1]) {
+    const candidate = explicitPathMatch[1].trim();
+    const abs = path.resolve(workspacePath, candidate);
+    if (isInsideWorkspace(workspacePath, abs) && fs.existsSync(abs) && fs.statSync(abs).isFile()) {
+      return candidate;
+    }
+  }
+
+  const files = listWorkspaceCodeFiles(workspacePath, 220);
+  const preferenceMap: Array<{ pattern: RegExp; candidates: string[] }> = [
+    { pattern: /(icon|avatar|emoji|profile|top right|right corner)/i, candidates: ["src/App.tsx", "src/components/Sidebar.tsx"] },
+    { pattern: /(theme|color|colors|palette|typography|font|liquid)/i, candidates: ["src/index.css", "src/App.tsx"] },
+    { pattern: /(chat|agent chat|conversation|thread)/i, candidates: ["src/components/AgentChat.tsx"] },
+    { pattern: /(settings|toggle|checkbox|option)/i, candidates: ["src/components/Settings.tsx"] },
+    { pattern: /(sidebar|menu|navigation|tab)/i, candidates: ["src/components/Sidebar.tsx"] },
+    { pattern: /(dashboard|stats|chart)/i, candidates: ["src/components/Dashboard.tsx"] },
+    { pattern: /(automation|workflow)/i, candidates: ["src/components/Automations.tsx", "server.ts"] },
+    { pattern: /(updater|update|restart|electron)/i, candidates: ["electron/main.ts", "server.ts"] },
+    { pattern: /(rules|policy|mcp)/i, candidates: ["src/components/RulesManager.tsx", "server.ts"] },
+  ];
+
+  for (const group of preferenceMap) {
+    if (!group.pattern.test(prompt)) continue;
+    for (const candidate of group.candidates) {
+      if (files.includes(candidate)) return candidate;
+    }
+  }
+
+  const fileListText = files.slice(0, 180).join("\n");
+  const selectorPrompt = [
+    "Pick exactly one target file path from the list that should be modified for the user's request.",
+    "Return only JSON like: {\"targetFile\":\"path/from/list\"}",
+    "Never invent a path. Use one from the list only.",
+    "",
+    `User request: ${prompt}`,
+    "",
+    "Candidate files:",
+    fileListText,
+  ].join("\n");
+
+  const selection = await generateWithModelFallback(
+    ai,
+    (config.ai.model || "gemini-3-flash-preview").trim(),
+    (config.ai.fallbackModel || "gemini-3-flash-preview").trim(),
+    [{ parts: [{ text: selectorPrompt }] }],
+    0.1,
+  );
+  const parsed = extractJsonObject(selection.text || "");
+  const fromModel = typeof parsed?.targetFile === "string" ? parsed.targetFile.trim() : "";
+  if (fromModel && files.includes(fromModel)) return fromModel;
+
+  if (files.includes("src/App.tsx")) return "src/App.tsx";
+  if (files.includes("server.ts")) return "server.ts";
+  if (files.length) return files[0];
+  throw new Error("No editable files found in workspace.");
+}
+
+async function generateSelfModProposal(
+  config: AppConfig,
+  body: SelfModProposeBody,
+): Promise<{ proposal: SelfModProposal; modelUsed: string; warning?: string }> {
+  const targetFile = String(body.targetFile || "").trim();
+  const instruction = String(body.instruction || "").trim();
+  if (!targetFile) {
+    throw new Error("Target file is required.");
+  }
+  if (!instruction) {
+    throw new Error("Instruction is required.");
+  }
+
+  const workspacePath = resolveWorkspacePath(config, body.workspacePath);
+  const targetAbsolutePath = path.resolve(workspacePath, targetFile);
+  if (!isInsideWorkspace(workspacePath, targetAbsolutePath)) {
+    throw new Error("Target file must be inside workspace path.");
+  }
+  if (!fs.existsSync(targetAbsolutePath) || !fs.statSync(targetAbsolutePath).isFile()) {
+    throw new Error(`Target file not found: ${targetFile}`);
+  }
+
+  const originalContent = fs.readFileSync(targetAbsolutePath, "utf-8");
+  if (originalContent.length > 200_000) {
+    throw new Error("Target file is too large for safe in-app modification. Split changes into smaller files.");
+  }
+
+  const apiKey = getGeminiApiKey(config);
+  if (!apiKey) {
+    throw new Error("Gemini API key is missing. Add it in Settings > AI Model Routing or .env.");
+  }
+
+  const ai = new GoogleGenAI({ apiKey });
+  const targetRelativePath = path.relative(workspacePath, targetAbsolutePath) || path.basename(targetAbsolutePath);
+  const selfModPrompt = [
+    "You are editing one code file for a strict approval workflow.",
+    "Return ONLY valid JSON with this shape:",
+    '{"summary":"short summary","updatedContent":"full updated file text"}',
+    "Rules:",
+    "- Preserve file language/syntax.",
+    "- Apply only requested change.",
+    "- Do not add markdown fences.",
+    "",
+    `Target file: ${targetRelativePath}`,
+    `User instruction: ${instruction}`,
+    "",
+    "Current file content:",
+    originalContent,
+  ].join("\n");
+
+  const result = await generateWithModelFallback(
+    ai,
+    (config.ai.model || "gemini-3-flash-preview").trim(),
+    (config.ai.fallbackModel || "gemini-3-flash-preview").trim(),
+    [
+      {
+        parts: [
+          { text: buildSystemPrompt("Generate a safe single-file code edit JSON response.", config.mcpRules || DEFAULT_RULES) },
+          { text: selfModPrompt },
+        ],
+      },
+    ],
+    0.2,
+  );
+
+  const parsed = extractJsonObject(result.text || "");
+  const updatedContent = typeof parsed?.updatedContent === "string" ? parsed.updatedContent : "";
+  const summary =
+    typeof parsed?.summary === "string" && parsed.summary.trim()
+      ? parsed.summary.trim()
+      : `Apply requested change to ${targetRelativePath}`;
+
+  if (!updatedContent) {
+    throw new Error("Model did not return valid updatedContent JSON.");
+  }
+
+  const proposalId = `sm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const approvalCode = `APPLY-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+  const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+  const proposal: SelfModProposal = {
+    id: proposalId,
+    createdAt: new Date().toISOString(),
+    expiresAt,
+    workspacePath,
+    targetAbsolutePath,
+    targetRelativePath,
+    instruction,
+    summary,
+    diffPreview: buildDiffPreview(originalContent, updatedContent),
+    originalHash: sha256(originalContent),
+    updatedHash: sha256(updatedContent),
+    originalContent,
+    updatedContent,
+    approvalCode,
+    status: "pending",
+  };
+  selfModProposals.set(proposalId, proposal);
+
+  if (selfModProposals.size > 100) {
+    const oldest = [...selfModProposals.values()].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())[0];
+    if (oldest) selfModProposals.delete(oldest.id);
+  }
+
+  return {
+    proposal,
+    modelUsed: result.modelUsed,
+    warning: result.warning,
+  };
+}
+
+async function runAutonomousSelfModification(config: AppConfig, prompt: string): Promise<{
+  ok: boolean;
+  text: string;
+  targetFile?: string;
+  backupPath?: string;
+}> {
+  if (!config.selfModification.enabled) {
+    return {
+      ok: false,
+      text: "Self-modification is disabled. Enable it in Settings first.",
+    };
+  }
+  if (!config.selfModification.autoApplyEnabled) {
+    return {
+      ok: false,
+      text: "Auto-apply self-modification is disabled. Enable it in Settings > Self-Modification.",
+    };
+  }
+
+  const workspacePath = resolveWorkspacePath(config, config.selfModification.workspacePath);
+  const apiKey = getGeminiApiKey(config);
+  if (!apiKey) {
+    return {
+      ok: false,
+      text: "Gemini API key is missing. Add it in Settings > AI Model Routing or .env.",
+    };
+  }
+
+  const ai = new GoogleGenAI({ apiKey });
+  const targetFile = await selectTargetFileForSelfMod(ai, config, prompt, workspacePath);
+  const { proposal, modelUsed, warning } = await generateSelfModProposal(config, {
+    workspacePath,
+    targetFile,
+    instruction: prompt,
+    autoApply: true,
+  });
+
+  const applied = applySelfModProposal(proposal, "auto");
+  const restartScheduled = scheduleElectronRelaunch(1800);
+  const messageLines = [
+    `Self-modification applied automatically.`,
+    `Target file: ${applied.targetFile}`,
+    `Backup: ${applied.backupPath}`,
+    `Model used: ${modelUsed}`,
+    warning ? `Warning: ${warning}` : "",
+    restartScheduled ? "App restart scheduled now to load changes." : "Restart not scheduled automatically in this runtime.",
+  ].filter(Boolean);
+
+  return {
+    ok: true,
+    text: messageLines.join("\n"),
+    targetFile: applied.targetFile,
+    backupPath: applied.backupPath,
+  };
+}
+
 function applySelfModProposal(proposal: SelfModProposal, mode: "manual" | "auto"): { targetFile: string; backupPath: string } {
   if (proposal.status !== "pending") {
     throw new Error(`Proposal is already ${proposal.status}.`);
@@ -661,7 +968,7 @@ Your goals:
 4. Assist with automations.
 5. Analyze images, audio, and video content provided for news value and SEO (ALT text, captions).
 6. When research sources are provided, ground factual claims in those sources and cite URLs inline.
-7. If asked to change this app's code/features/colors, explain that Azat Studio supports in-app self-modification workflows (manual or auto-apply if enabled), with backups before writes.
+7. If asked to change this app's code/features/colors and auto-apply is enabled, execute self-modification workflow with backup + restart; otherwise explain what setting is missing.
 
 Context: ${context || "No additional context provided."}`;
 }
@@ -1132,119 +1439,12 @@ async function startServer() {
       }
 
       const body = (req.body || {}) as SelfModProposeBody;
-      const targetFile = String(body.targetFile || "").trim();
-      const instruction = String(body.instruction || "").trim();
-      if (!targetFile) {
-        return res.status(400).json({ ok: false, message: "Target file is required." });
-      }
-      if (!instruction) {
-        return res.status(400).json({ ok: false, message: "Instruction is required." });
-      }
-
-      const workspacePath = resolveWorkspacePath(config, body.workspacePath);
-      const targetAbsolutePath = path.resolve(workspacePath, targetFile);
-      if (!isInsideWorkspace(workspacePath, targetAbsolutePath)) {
-        return res.status(400).json({ ok: false, message: "Target file must be inside workspace path." });
-      }
-      if (!fs.existsSync(targetAbsolutePath) || !fs.statSync(targetAbsolutePath).isFile()) {
-        return res.status(400).json({ ok: false, message: `Target file not found: ${targetFile}` });
-      }
-
-      const originalContent = fs.readFileSync(targetAbsolutePath, "utf-8");
-      if (originalContent.length > 200_000) {
-        return res.status(400).json({
-          ok: false,
-          message: "Target file is too large for safe in-app modification. Split changes into smaller files.",
-        });
-      }
-
-      const apiKey = getGeminiApiKey(config);
-      if (!apiKey) {
-        return res.status(400).json({
-          ok: false,
-          message: "Gemini API key is missing. Add it in Settings > AI Model Routing or .env.",
-        });
-      }
-
-      const ai = new GoogleGenAI({ apiKey });
-      const targetRelativePath = path.relative(workspacePath, targetAbsolutePath) || path.basename(targetAbsolutePath);
-      const selfModPrompt = [
-        "You are editing one code file for a strict approval workflow.",
-        "Return ONLY valid JSON with this shape:",
-        '{"summary":"short summary","updatedContent":"full updated file text"}',
-        "Rules:",
-        "- Preserve file language/syntax.",
-        "- Apply only requested change.",
-        "- Do not add markdown fences.",
-        "",
-        `Target file: ${targetRelativePath}`,
-        `User instruction: ${instruction}`,
-        "",
-        "Current file content:",
-        originalContent,
-      ].join("\n");
-
-      const result = await generateWithModelFallback(
-        ai,
-        (config.ai.model || "gemini-3-flash-preview").trim(),
-        (config.ai.fallbackModel || "gemini-3-flash-preview").trim(),
-        [
-          {
-            parts: [
-              { text: buildSystemPrompt("Generate a safe single-file code edit JSON response.", config.mcpRules || DEFAULT_RULES) },
-              { text: selfModPrompt },
-            ],
-          },
-        ],
-        0.2,
-      );
-
-      const parsed = extractJsonObject(result.text || "");
-      const updatedContent = typeof parsed?.updatedContent === "string" ? parsed.updatedContent : "";
-      const summary =
-        typeof parsed?.summary === "string" && parsed.summary.trim()
-          ? parsed.summary.trim()
-          : `Apply requested change to ${targetRelativePath}`;
-
-      if (!updatedContent) {
-        return res.status(500).json({
-          ok: false,
-          message: "Model did not return valid updatedContent JSON.",
-          raw: result.text?.slice(0, 600) || "",
-        });
-      }
-
-      const proposalId = `sm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const approvalCode = `APPLY-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
-      const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-      const proposal: SelfModProposal = {
-        id: proposalId,
-        createdAt: new Date().toISOString(),
-        expiresAt,
-        workspacePath,
-        targetAbsolutePath,
-        targetRelativePath,
-        instruction,
-        summary,
-        diffPreview: buildDiffPreview(originalContent, updatedContent),
-        originalHash: sha256(originalContent),
-        updatedHash: sha256(updatedContent),
-        originalContent,
-        updatedContent,
-        approvalCode,
-        status: "pending",
-      };
-      selfModProposals.set(proposalId, proposal);
-
-      if (selfModProposals.size > 100) {
-        const oldest = [...selfModProposals.values()]
-          .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())[0];
-        if (oldest) selfModProposals.delete(oldest.id);
-      }
+      const { proposal, modelUsed, warning } = await generateSelfModProposal(config, body);
 
       const autoApplyRequested = Boolean(body.autoApply) && config.selfModification.autoApplyEnabled;
       if (autoApplyRequested) {
         const applied = applySelfModProposal(proposal, "auto");
+        const restartScheduled = scheduleElectronRelaunch(1800);
         return res.json({
           ok: true,
           proposalId: proposal.id,
@@ -1255,9 +1455,10 @@ async function startServer() {
           expiresAt: proposal.expiresAt,
           autoApplied: true,
           backupPath: applied.backupPath,
-          modelUsed: result.modelUsed,
-          warning: result.warning,
-          message: `Auto-applied to ${applied.targetFile}. Backup created.`,
+          modelUsed,
+          warning,
+          restartScheduled,
+          message: `Auto-applied to ${applied.targetFile}. Backup created.${restartScheduled ? " App restart scheduled." : ""}`,
         });
       }
 
@@ -1269,11 +1470,13 @@ async function startServer() {
         diffPreview: proposal.diffPreview,
         approvalCode: proposal.approvalCode,
         expiresAt: proposal.expiresAt,
-        modelUsed: result.modelUsed,
-        warning: result.warning,
+        modelUsed,
+        warning,
       });
     } catch (error) {
-      return res.status(500).json({ ok: false, message: String(error) });
+      const message = String(error || "");
+      const status = /required|invalid|not found|inside workspace|missing|too large/i.test(message) ? 400 : 500;
+      return res.status(status).json({ ok: false, message });
     }
   });
 
@@ -1307,13 +1510,15 @@ async function startServer() {
       }
 
       const applied = applySelfModProposal(proposal, allowAutoApply ? "auto" : "manual");
+      const restartScheduled = allowAutoApply ? scheduleElectronRelaunch(1800) : false;
 
       return res.json({
         ok: true,
-        message: `Applied changes to ${applied.targetFile}. Backup created.`,
+        message: `Applied changes to ${applied.targetFile}. Backup created.${restartScheduled ? " App restart scheduled." : ""}`,
         targetFile: applied.targetFile,
         backupPath: applied.backupPath,
         applyMode: allowAutoApply ? "auto" : "manual",
+        restartScheduled,
       });
     } catch (error) {
       return res.status(500).json({ ok: false, message: String(error) });
@@ -1870,6 +2075,19 @@ ${reviewContent}`;
         });
       }
 
+      if (isAutonomousSelfModIntent(prompt)) {
+        const selfModResult = await runAutonomousSelfModification(config, prompt);
+        return res.json({
+          text: selfModResult.text,
+          selfModification: {
+            attempted: true,
+            ok: selfModResult.ok,
+            targetFile: selfModResult.targetFile,
+            backupPath: selfModResult.backupPath,
+          },
+        });
+      }
+
       const safeParts: AgentPart[] = Array.isArray(parts)
         ? parts
             .filter((part) => part && (typeof part.text === "string" || part.inlineData))
@@ -1967,9 +2185,10 @@ ${reviewContent}`;
       });
     } catch (error) {
       console.error("Gemini API Error:", error);
+      const detail = String(error || "").slice(0, 300);
       return res.status(500).json({
         error: "Failed to generate response.",
-        text: "I'm sorry, I encountered an error while processing your request.",
+        text: `I encountered an error while processing your request: ${detail || "unknown error"}.`,
       });
     }
   });
