@@ -585,6 +585,104 @@ function verifyWrittenSelfModFile(targetPath: string, expectedHash: string): { o
   return { ok: true, detail: "Write verification passed." };
 }
 
+function hasNpmScript(workspacePath: string, scriptName: string): boolean {
+  try {
+    const packageJsonPath = path.join(workspacePath, "package.json");
+    if (!fs.existsSync(packageJsonPath) || !fs.statSync(packageJsonPath).isFile()) return false;
+    const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8"));
+    return typeof pkg?.scripts?.[scriptName] === "string" && Boolean(String(pkg.scripts[scriptName]).trim());
+  } catch {
+    return false;
+  }
+}
+
+function runCommandWithCapture(command: string, args: string[], cwd: string, timeoutMs: number): { ok: boolean; stdout: string; stderr: string; detail: string } {
+  try {
+    const stdout = execFileSync(command, args, {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: timeoutMs,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    return {
+      ok: true,
+      stdout: String(stdout || ""),
+      stderr: "",
+      detail: "ok",
+    };
+  } catch (error: any) {
+    const stdout = typeof error?.stdout === "string" ? error.stdout : String(error?.stdout || "");
+    const stderr = typeof error?.stderr === "string" ? error.stderr : String(error?.stderr || "");
+    const detail = String(error?.message || "command failed");
+    return { ok: false, stdout, stderr, detail };
+  }
+}
+
+function runSelfModQualityGate(workspacePath: string): { ok: boolean; detail: string } {
+  if (!hasNpmScript(workspacePath, "lint")) {
+    return { ok: true, detail: "Quality gate skipped: lint script not found." };
+  }
+
+  const lint = runCommandWithCapture("npm", ["run", "lint"], workspacePath, 150_000);
+  if (!lint.ok) {
+    const reason = [lint.stderr, lint.stdout, lint.detail].filter(Boolean).join(" ").slice(0, 420);
+    return { ok: false, detail: `npm run lint failed: ${reason}` };
+  }
+
+  if (!hasNpmScript(workspacePath, "build")) {
+    return { ok: true, detail: "Quality gate passed: lint." };
+  }
+
+  const build = runCommandWithCapture("npm", ["run", "build"], workspacePath, 210_000);
+  if (!build.ok) {
+    const reason = [build.stderr, build.stdout, build.detail].filter(Boolean).join(" ").slice(0, 420);
+    return { ok: false, detail: `npm run build failed: ${reason}` };
+  }
+
+  return { ok: true, detail: "Quality gate passed: lint + build." };
+}
+
+function runSelfModGitSnapshot(workspacePath: string, targetRelativePath: string, instruction: string): { status: "ok" | "error" | "skipped"; detail: string } {
+  const repoCheck = runCommandWithCapture("git", ["rev-parse", "--is-inside-work-tree"], workspacePath, 8_000);
+  if (!repoCheck.ok || !repoCheck.stdout.toLowerCase().includes("true")) {
+    return { status: "skipped", detail: "Git snapshot skipped: workspace is not a git repository." };
+  }
+
+  const fileStatus = runCommandWithCapture("git", ["status", "--porcelain", "--", targetRelativePath], workspacePath, 8_000);
+  if (!fileStatus.ok) {
+    return { status: "error", detail: "Git snapshot failed: could not read repository status." };
+  }
+  if (!fileStatus.stdout.trim()) {
+    return { status: "skipped", detail: "Git snapshot skipped: no staged or unstaged target-file changes detected." };
+  }
+
+  const add = runCommandWithCapture("git", ["add", "--", targetRelativePath], workspacePath, 8_000);
+  if (!add.ok) {
+    return { status: "error", detail: "Git snapshot failed: could not stage target file." };
+  }
+
+  const shortInstruction = instruction.replace(/\s+/g, " ").trim().slice(0, 72);
+  const commitMessage = `self-mod: ${targetRelativePath}${shortInstruction ? ` - ${shortInstruction}` : ""}`;
+  const commit = runCommandWithCapture("git", ["commit", "-m", commitMessage], workspacePath, 25_000);
+  if (!commit.ok) {
+    const msg = [commit.stderr, commit.stdout, commit.detail].join(" ");
+    if (/nothing to commit/i.test(msg)) {
+      return { status: "skipped", detail: "Git snapshot skipped: nothing new to commit." };
+    }
+    if (/author identity unknown|user\.name|user\.email/i.test(msg)) {
+      return { status: "error", detail: "Git snapshot failed: configure git user.name and user.email." };
+    }
+    return { status: "error", detail: "Git snapshot failed: commit command returned an error." };
+  }
+
+  const head = runCommandWithCapture("git", ["rev-parse", "--short", "HEAD"], workspacePath, 8_000);
+  if (!head.ok || !head.stdout.trim()) {
+    return { status: "ok", detail: "Local git snapshot saved." };
+  }
+  return { status: "ok", detail: `Local git snapshot saved: ${head.stdout.trim()}` };
+}
+
 let relaunchScheduled = false;
 
 function scheduleElectronRelaunch(delayMs = 1800): boolean {
@@ -944,9 +1042,30 @@ function executeSelfModApplication(proposal: SelfModProposal, mode: "manual" | "
   }
   markSelfModStep(execution, "verify", "ok", verification.detail);
 
+  const quality = runSelfModQualityGate(proposal.workspacePath);
+  if (!quality.ok) {
+    markSelfModStep(execution, "quality-gate", "error", quality.detail);
+    try {
+      fs.writeFileSync(proposal.targetAbsolutePath, currentContent, "utf-8");
+      proposal.status = "rolled_back";
+      execution.rolledBack = true;
+      markSelfModStep(execution, "rollback", "ok", "Original file restored after quality-gate failure.");
+    } catch (rollbackError) {
+      execution.error = `Quality gate failed and rollback failed: ${quality.detail}; rollback error: ${String(rollbackError)}`;
+      markSelfModStep(execution, "rollback", "error", execution.error);
+      return execution;
+    }
+    execution.error = `Quality gate failed after write: ${quality.detail}`;
+    return execution;
+  }
+  markSelfModStep(execution, "quality-gate", "ok", quality.detail);
+
   proposal.status = "applied";
   proposal.backupPath = backupPath;
   execution.success = true;
+
+  const snapshot = runSelfModGitSnapshot(proposal.workspacePath, proposal.targetRelativePath, proposal.instruction);
+  markSelfModStep(execution, "snapshot", snapshot.status, snapshot.detail);
 
   if (requestRestart && mode === "auto") {
     execution.restartScheduled = scheduleElectronRelaunch(1800);
