@@ -71,6 +71,8 @@ export default function Settings() {
   const [updaterState, setUpdaterState] = useState<DesktopUpdaterState | null>(null);
   const [updaterBusyAction, setUpdaterBusyAction] = useState<'check' | 'download' | 'install' | null>(null);
   const [updaterAvailable, setUpdaterAvailable] = useState(false);
+  const [showSelfModAdvanced, setShowSelfModAdvanced] = useState(false);
+  const [isSelfModSyncing, setIsSelfModSyncing] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -160,6 +162,23 @@ export default function Settings() {
       setError(String(saveError));
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const saveSelfModificationSettings = async (nextSelfModification: AppConfig['selfModification']) => {
+    if (!config) return;
+    const nextConfig = { ...config, selfModification: nextSelfModification };
+    setConfig(nextConfig);
+    setIsSelfModSyncing(true);
+    try {
+      const saved = await fetchJson<AppConfig>('/api/settings', buildJsonInit('PUT', nextConfig));
+      setConfig(saved);
+      setMessage('Self-modification settings saved.');
+      setError('');
+    } catch (saveError) {
+      setError(String(saveError));
+    } finally {
+      setIsSelfModSyncing(false);
     }
   };
 
@@ -793,7 +812,7 @@ export default function Settings() {
           <div>
             <h3 className="font-bold liquid-title">Self-Modification (Safe Mode)</h3>
             <p className="text-xs liquid-muted">
-              Generate one-file code change proposals with automatic backups. You can keep manual approval or enable guarded auto-apply.
+              Default mode is chat-driven: ask the agent to change itself, and it will pick files automatically with backup + verification.
             </p>
           </div>
         </div>
@@ -802,12 +821,14 @@ export default function Settings() {
           <input
             type="checkbox"
             checked={config.selfModification.enabled}
-            onChange={(e) =>
-              setConfig({
-                ...config,
-                selfModification: { ...config.selfModification, enabled: e.target.checked },
-              })
-            }
+            onChange={(e) => {
+              const enabled = e.target.checked;
+              void saveSelfModificationSettings({
+                ...config.selfModification,
+                enabled,
+                autoApplyEnabled: enabled ? config.selfModification.autoApplyEnabled : false,
+              });
+            }}
             className="h-4 w-4 rounded border-white/50 bg-white/15 accent-sky-500"
           />
           Enable in-app self-modification workflow
@@ -817,63 +838,98 @@ export default function Settings() {
           <input
             type="checkbox"
             checked={config.selfModification.autoApplyEnabled}
-            onChange={(e) =>
-              setConfig({
-                ...config,
-                selfModification: { ...config.selfModification, autoApplyEnabled: e.target.checked },
-              })
-            }
+            onChange={(e) => {
+              void saveSelfModificationSettings({
+                ...config.selfModification,
+                autoApplyEnabled: e.target.checked,
+              });
+            }}
             disabled={!config.selfModification.enabled}
             className="h-4 w-4 rounded border-white/50 bg-white/15 accent-sky-500 disabled:opacity-50"
           />
           Auto-apply generated proposals (still creates backup before write)
         </label>
 
-        {config.selfModification.autoApplyEnabled && (
-          <div className="p-3 rounded-xl border liquid-note-warn text-xs liquid-title">
-            Auto-apply writes changes immediately after proposal generation. Keep this only for trusted workflows and review backups in
-            <code> ~/.mcp-agentic-editor/backups</code>.
+        <div className="p-3 rounded-xl border liquid-note-warn text-xs liquid-title">
+          Ask directly in chat, for example:
+          <div className="mt-2 font-mono text-[11px] break-words">
+            "Change your top-right icon to 🤖 and auto-apply now."
+          </div>
+          <div className="mt-2">
+            The agent will auto-select files and return an execution audit (precheck, backup, write, verify, restart/rollback).
+          </div>
+        </div>
+
+        <div className="text-xs liquid-muted">
+          {isSelfModSyncing ? 'Syncing self-mod settings...' : 'Self-mod settings are saved automatically when toggled.'}
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setShowSelfModAdvanced((prev) => !prev)}
+          className="flex items-center gap-2 px-4 py-2 liquid-pill border rounded-lg text-xs font-bold liquid-title"
+        >
+          <Wrench size={12} />
+          {showSelfModAdvanced ? 'Hide Advanced Controls' : 'Show Advanced Controls'}
+        </button>
+
+        {showSelfModAdvanced && (
+          <div className="space-y-4">
+            {config.selfModification.autoApplyEnabled && (
+              <div className="p-3 rounded-xl border liquid-note-warn text-xs liquid-title">
+                Auto-apply writes changes immediately after proposal generation. Keep this only for trusted workflows and review backups in
+                <code> ~/.mcp-agentic-editor/backups</code>.
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 gap-3">
+              <div className="flex items-center gap-2">
+                <input
+                  value={config.selfModification.workspacePath}
+                  onChange={(e) =>
+                    setConfig({
+                      ...config,
+                      selfModification: { ...config.selfModification, workspacePath: e.target.value },
+                    })
+                  }
+                  placeholder="/Users/.../Downloads/azat-studio"
+                  className="flex-1 px-3 py-2 liquid-input rounded-lg text-sm"
+                />
+                <button
+                  onClick={() => void saveSelfModificationSettings(config.selfModification)}
+                  className="px-3 py-2 liquid-pill border rounded-lg text-xs font-bold liquid-title"
+                >
+                  Save Path
+                </button>
+              </div>
+              <input
+                value={selfModTargetFile}
+                onChange={(e) => setSelfModTargetFile(e.target.value)}
+                placeholder="Target file relative path, e.g. src/components/AgentChat.tsx"
+                className="px-3 py-2 liquid-input rounded-lg text-sm"
+              />
+              <textarea
+                value={selfModInstruction}
+                onChange={(e) => setSelfModInstruction(e.target.value)}
+                placeholder="Describe exact change to implement (clear, testable, one-file scope)."
+                className="px-3 py-2 liquid-input rounded-lg text-sm min-h-[110px]"
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                onClick={proposeSelfModification}
+                disabled={!config.selfModification.enabled || !selfModTargetFile.trim() || !selfModInstruction.trim() || isSelfModBusy}
+                className="flex items-center gap-2 px-4 py-2 liquid-pill border rounded-lg text-xs font-bold liquid-title disabled:opacity-50"
+              >
+                <Wrench size={12} />
+                {isSelfModBusy ? 'Running Self-Mod...' : config.selfModification.autoApplyEnabled ? 'Generate & Auto-Apply' : 'Generate Proposal'}
+              </button>
+            </div>
           </div>
         )}
 
-        <div className="grid grid-cols-1 gap-3">
-          <input
-            value={config.selfModification.workspacePath}
-            onChange={(e) =>
-              setConfig({
-                ...config,
-                selfModification: { ...config.selfModification, workspacePath: e.target.value },
-              })
-            }
-            placeholder="/Users/.../Downloads/azat-studio"
-            className="px-3 py-2 liquid-input rounded-lg text-sm"
-          />
-          <input
-            value={selfModTargetFile}
-            onChange={(e) => setSelfModTargetFile(e.target.value)}
-            placeholder="Target file relative path, e.g. src/components/AgentChat.tsx"
-            className="px-3 py-2 liquid-input rounded-lg text-sm"
-          />
-          <textarea
-            value={selfModInstruction}
-            onChange={(e) => setSelfModInstruction(e.target.value)}
-            placeholder="Describe exact change to implement (clear, testable, one-file scope)."
-            className="px-3 py-2 liquid-input rounded-lg text-sm min-h-[110px]"
-          />
-        </div>
-
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            onClick={proposeSelfModification}
-            disabled={!config.selfModification.enabled || !selfModTargetFile.trim() || !selfModInstruction.trim() || isSelfModBusy}
-            className="flex items-center gap-2 px-4 py-2 liquid-pill border rounded-lg text-xs font-bold liquid-title disabled:opacity-50"
-          >
-            <Wrench size={12} />
-            {isSelfModBusy ? 'Running Self-Mod...' : config.selfModification.autoApplyEnabled ? 'Generate & Auto-Apply' : 'Generate Proposal'}
-          </button>
-        </div>
-
-        {selfModProposal && (
+        {showSelfModAdvanced && selfModProposal && (
           <div className="liquid-surface border rounded-xl p-4 space-y-3">
             <div className="text-sm liquid-title font-semibold">{selfModProposal.summary}</div>
             <div className="text-xs liquid-muted">Target: {selfModProposal.targetFile}</div>

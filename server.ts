@@ -610,18 +610,21 @@ function isAutonomousSelfModIntent(prompt: string): boolean {
   const explicitExecute = /(do it|go ahead|proceed|apply it|make the change|initiate self-mod|initiate self modification|start self-mod|start self modification)/i.test(
     text,
   );
+  const immediateExecute = /(now|right now|immediately|asap)/i.test(text);
   const hasSelfTarget = /(yourself|itself|your app|app itself|azat studio|agent|this app|own ui|own features|self-mod|your (icon|icons|ui|feature|features|color|colors|code))/i.test(
     text,
   );
   if (explicitExecute && hasSelfTarget) return true;
 
+  const hasActionVerb = /(change|modify|update|improve|fix|redesign|restyle|replace|add|remove|implement)/i.test(text);
+  if (hasSelfTarget && hasActionVerb && immediateExecute) return true;
+
   const looksLikeCapabilityQuestion = /^\s*(can|could|are you|do you)\b/i.test(text) && text.includes("?");
   const asksCapabilityOnly =
     (/(can you|could you|are you able|are you capable|ability)/i.test(text) || looksLikeCapabilityQuestion) &&
-    !/(do it|do this|proceed|go ahead|apply|initiate|start now|make it now)/i.test(text);
+    !/(do it|do this|proceed|go ahead|apply|initiate|start now|make it now|now|immediately)/i.test(text);
   if (asksCapabilityOnly) return false;
 
-  const hasActionVerb = /(change|modify|update|improve|fix|redesign|restyle|replace|add|remove|implement)/i.test(text);
   return hasActionVerb && hasSelfTarget;
 }
 
@@ -1610,6 +1613,12 @@ async function startServer() {
           id: "notebook-bridge",
           enabled: Boolean(config.research.notebookWorkspacePath),
           fallback: "attachments-in-chat",
+        },
+        {
+          id: "self-modification",
+          enabled: config.selfModification.enabled,
+          autoApply: config.selfModification.autoApplyEnabled,
+          fallback: "manual-approval",
         },
       ],
       policy: {
