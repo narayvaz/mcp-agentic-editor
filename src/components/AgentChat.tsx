@@ -73,6 +73,14 @@ interface SelfModApplyResponse {
   execution?: SelfModificationExecution;
 }
 
+interface SelfModAutoResponse {
+  ok: boolean;
+  message: string;
+  targetFile?: string;
+  backupPath?: string;
+  execution?: SelfModificationExecution;
+}
+
 const THREADS_STORAGE_KEY = 'mcp-agent-chat-threads-v2';
 const ACTIVE_THREAD_STORAGE_KEY = 'mcp-agent-chat-active-thread-v2';
 const LEGACY_HISTORY_STORAGE_KEY = 'mcp-agent-chat-history-v1';
@@ -493,69 +501,82 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
     setIsTyping(true);
 
     if (selfModMode) {
-      if (!selfModTargetFile.trim()) {
-        pushAgentMessage('Self-mod mode is ON, but target file is empty. Add a target file first.');
-        setIsTyping(false);
-        return;
-      }
-
       setIsSelfModBusy(true);
       try {
-        const response = await fetch('/api/self-mod/propose', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            targetFile: selfModTargetFile.trim(),
-            instruction: userPrompt,
-            autoApply: selfModAutoApplyEnabled,
-          }),
-        });
+        if (!selfModTargetFile.trim()) {
+          const response = await fetch('/api/self-mod/auto', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              instruction: userPrompt,
+            }),
+          });
 
-        const payload = (await response.json()) as SelfModProposalResponse;
-        if (!response.ok || !payload.proposalId) {
-          pushAgentMessage(`Self-mod proposal failed: ${payload.message || 'Unknown error'}`);
-          setIsTyping(false);
-          setIsSelfModBusy(false);
-          return;
-        }
-
-        if (payload.autoApplied) {
-          setSelfModProposal(null);
-          setSelfModApprovalInput('');
-          setSelfModMode(false);
+          const payload = (await response.json()) as SelfModAutoResponse;
           const audit = formatExecutionAudit(payload.execution);
-          pushAgentMessage(
-            [
-              payload.message || `Self-mod auto-applied to \`${payload.targetFile}\`.`,
-              audit,
-              '',
-              `Summary: ${payload.summary}`,
-              '',
-              'Diff preview:',
-              '```diff',
-              payload.diffPreview || 'No diff preview',
-              '```',
-            ].join('\n'),
-          );
+          pushAgentMessage([payload.message || 'Self-mod auto execution completed.', audit].filter(Boolean).join('\n\n'));
+          if (payload.ok) {
+            setSelfModMode(false);
+          }
         } else {
-          setSelfModProposal(payload);
-          setSelfModApprovalInput('');
-          pushAgentMessage(
-            [
-              `Self-mod proposal ready for \`${payload.targetFile}\`.`,
-              '',
-              `Summary: ${payload.summary}`,
-              `Approval code: \`${payload.approvalCode}\``,
-              `Expires: ${new Date(payload.expiresAt).toLocaleString()}`,
-              '',
-              'Diff preview:',
-              '```diff',
-              payload.diffPreview || 'No diff preview',
-              '```',
-            ].join('\n'),
-          );
+          const response = await fetch('/api/self-mod/propose', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              targetFile: selfModTargetFile.trim(),
+              instruction: userPrompt,
+              autoApply: selfModAutoApplyEnabled,
+            }),
+          });
+
+          const payload = (await response.json()) as SelfModProposalResponse;
+          if (!response.ok || !payload.proposalId) {
+            pushAgentMessage(`Self-mod proposal failed: ${payload.message || 'Unknown error'}`);
+            setIsTyping(false);
+            setIsSelfModBusy(false);
+            return;
+          }
+
+          if (payload.autoApplied) {
+            setSelfModProposal(null);
+            setSelfModApprovalInput('');
+            setSelfModMode(false);
+            const audit = formatExecutionAudit(payload.execution);
+            pushAgentMessage(
+              [
+                payload.message || `Self-mod auto-applied to \`${payload.targetFile}\`.`,
+                audit,
+                '',
+                `Summary: ${payload.summary}`,
+                '',
+                'Diff preview:',
+                '```diff',
+                payload.diffPreview || 'No diff preview',
+                '```',
+              ].join('\n'),
+            );
+          } else {
+            setSelfModProposal(payload);
+            setSelfModApprovalInput('');
+            pushAgentMessage(
+              [
+                `Self-mod proposal ready for \`${payload.targetFile}\`.`,
+                '',
+                `Summary: ${payload.summary}`,
+                `Approval code: \`${payload.approvalCode}\``,
+                `Expires: ${new Date(payload.expiresAt).toLocaleString()}`,
+                '',
+                'Diff preview:',
+                '```diff',
+                payload.diffPreview || 'No diff preview',
+                '```',
+              ].join('\n'),
+            );
+          }
         }
       } catch (error) {
         pushAgentMessage(`Self-mod proposal failed: ${String(error)}`);
@@ -814,15 +835,15 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
 
         {selfModMode && (
           <div className="space-y-2 liquid-surface border rounded-xl p-3">
-            <div className="text-[10px] liquid-soft uppercase tracking-wider font-bold">Self-mod target file</div>
+            <div className="text-[10px] liquid-soft uppercase tracking-wider font-bold">Self-mod target file (optional)</div>
             <input
               value={selfModTargetFile}
               onChange={(e) => setSelfModTargetFile(e.target.value)}
-              placeholder="src/components/Sidebar.tsx"
+              placeholder="Leave empty for automatic file discovery"
               className="w-full px-3 py-2 liquid-input rounded-lg text-xs"
             />
             <p className="text-[11px] liquid-muted">
-              Send a message describing the exact code change. Current mode: {selfModAutoApplyEnabled ? 'auto-apply with backup' : 'manual approval'}.
+              Send the change request in chat. If file is empty, the agent will auto-discover the target. Current mode: {selfModAutoApplyEnabled ? 'auto-apply with backup' : 'manual approval'}.
             </p>
           </div>
         )}

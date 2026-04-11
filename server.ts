@@ -148,6 +148,10 @@ interface SelfModApplyBody {
   autoApply?: boolean;
 }
 
+interface SelfModAutoBody {
+  instruction?: string;
+}
+
 interface SelfModProposal {
   id: string;
   createdAt: string;
@@ -1732,6 +1736,29 @@ async function startServer() {
         execution,
         applyMode: allowAutoApply ? "auto" : "manual",
         restartScheduled: execution.restartScheduled,
+      });
+    } catch (error) {
+      return res.status(500).json({ ok: false, message: String(error) });
+    }
+  });
+
+  app.post("/api/self-mod/auto", async (req, res) => {
+    try {
+      const config = readConfig();
+      const body = (req.body || {}) as SelfModAutoBody;
+      const instruction = String(body.instruction || "").trim();
+      if (!instruction) {
+        return res.status(400).json({ ok: false, message: "instruction is required." });
+      }
+
+      const result = await runAutonomousSelfModification(config, instruction);
+      const statusCode = result.ok ? 200 : 409;
+      return res.status(statusCode).json({
+        ok: result.ok,
+        message: result.text,
+        execution: result.execution,
+        targetFile: result.targetFile,
+        backupPath: result.backupPath,
       });
     } catch (error) {
       return res.status(500).json({ ok: false, message: String(error) });
