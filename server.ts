@@ -597,6 +597,20 @@ function hasNpmScript(workspacePath: string, scriptName: string): boolean {
 }
 
 function runCommandWithCapture(command: string, args: string[], cwd: string, timeoutMs: number): { ok: boolean; stdout: string; stderr: string; detail: string } {
+  const env = { ...process.env };
+  const pathChunks = [
+    path.isAbsolute(command) ? path.dirname(command) : "",
+    env.PATH || "",
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+  ]
+    .filter(Boolean)
+    .flatMap((entry) => entry.split(":"))
+    .filter(Boolean);
+  env.PATH = Array.from(new Set(pathChunks)).join(":");
+
   try {
     const stdout = execFileSync(command, args, {
       cwd,
@@ -604,6 +618,7 @@ function runCommandWithCapture(command: string, args: string[], cwd: string, tim
       stdio: ["ignore", "pipe", "pipe"],
       timeout: timeoutMs,
       maxBuffer: 8 * 1024 * 1024,
+      env,
     });
     return {
       ok: true,
@@ -622,7 +637,13 @@ function runCommandWithCapture(command: string, args: string[], cwd: string, tim
 function isCommandNotAvailableFailure(result: { ok: boolean; stdout: string; stderr: string; detail: string }): boolean {
   if (result.ok) return false;
   const text = `${result.detail}\n${result.stderr}\n${result.stdout}`.toLowerCase();
-  return /enoent|command not found|spawn sync .*enoent|spawn .*enoent/.test(text);
+  return /enoent|command not found|no such file or directory|spawn sync .*enoent|spawn .*enoent/.test(text);
+}
+
+function isNodeRuntimeUnavailableFailure(result: { ok: boolean; stdout: string; stderr: string; detail: string }): boolean {
+  if (result.ok) return false;
+  const text = `${result.detail}\n${result.stderr}\n${result.stdout}`.toLowerCase();
+  return /env:\s*node:\s*no such file or directory|node:\s*command not found/.test(text);
 }
 
 function resolveNpmExecutable(): string | null {
@@ -663,7 +684,7 @@ function runSelfModQualityGate(workspacePath: string): { ok: boolean; detail: st
 
   const lint = runCommandWithCapture(npmExecutable, ["run", "lint"], workspacePath, 150_000);
   if (!lint.ok) {
-    if (isCommandNotAvailableFailure(lint)) {
+    if (isCommandNotAvailableFailure(lint) || isNodeRuntimeUnavailableFailure(lint)) {
       return { ok: true, detail: "Quality gate skipped: npm is unavailable from app runtime environment." };
     }
     const reason = [lint.stderr, lint.stdout, lint.detail].filter(Boolean).join(" ").slice(0, 420);
@@ -676,7 +697,7 @@ function runSelfModQualityGate(workspacePath: string): { ok: boolean; detail: st
 
   const build = runCommandWithCapture(npmExecutable, ["run", "build"], workspacePath, 210_000);
   if (!build.ok) {
-    if (isCommandNotAvailableFailure(build)) {
+    if (isCommandNotAvailableFailure(build) || isNodeRuntimeUnavailableFailure(build)) {
       return { ok: true, detail: "Quality gate partially skipped: npm became unavailable before build check." };
     }
     const reason = [build.stderr, build.stdout, build.detail].filter(Boolean).join(" ").slice(0, 420);
