@@ -189,6 +189,25 @@ interface SelfModExecution {
 }
 
 const selfModProposals = new Map<string, SelfModProposal>();
+
+let activeSelfModOperation: { label: string; startedAt: number } | null = null;
+
+function beginSelfModOperation(label: string): { ok: true } | { ok: false; message: string } {
+  if (activeSelfModOperation) {
+    const elapsedSeconds = Math.max(0, Math.round((Date.now() - activeSelfModOperation.startedAt) / 1000));
+    return {
+      ok: false,
+      message: `Another self-modification is already running (${activeSelfModOperation.label}, ${elapsedSeconds}s). Please retry in a few seconds.`,
+    };
+  }
+  activeSelfModOperation = { label, startedAt: Date.now() };
+  return { ok: true };
+}
+
+function endSelfModOperation() {
+  activeSelfModOperation = null;
+}
+
 const KEYCHAIN_SERVICE = "Azat Studio";
 const KEYCHAIN_REF_PREFIX = "keychain://";
 
@@ -2004,6 +2023,11 @@ async function startServer() {
   });
 
   app.post("/api/self-mod/auto", async (req, res) => {
+    const operation = beginSelfModOperation("auto");
+    if (operation.ok === false) {
+      return res.status(409).json({ ok: false, message: operation.message });
+    }
+
     try {
       const config = readConfig();
       const body = (req.body || {}) as SelfModAutoBody;
@@ -2023,6 +2047,8 @@ async function startServer() {
       });
     } catch (error) {
       return res.status(500).json({ ok: false, message: String(error) });
+    } finally {
+      endSelfModOperation();
     }
   });
 

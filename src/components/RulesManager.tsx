@@ -64,7 +64,7 @@ export default function RulesManager() {
       <header className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-serif font-bold text-slate-950 dark:text-white">MCP Rules Engine</h2>
-          <p className="text-slate-700 dark:text-slate-200 text-sm">Define the standards the Agent uses to review content and manage WordPress.</p>
+          <p className="text-slate-800 dark:text-slate-100 text-sm">Define the standards the Agent uses to review content and manage WordPress.</p>
         </div>
         <div className="flex gap-3">
           <button
@@ -110,7 +110,7 @@ export default function RulesManager() {
             <textarea 
               value={rules}
               onChange={(e) => setRules(e.target.value)}
-              className="w-full h-[600px] p-8 font-mono text-sm text-slate-900 dark:text-slate-50 bg-white dark:bg-slate-900 focus:outline-none resize-none leading-relaxed"
+              className="w-full h-[600px] p-8 font-mono text-sm text-slate-950 dark:text-slate-100 bg-white dark:bg-slate-900 focus:outline-none resize-none leading-relaxed"
               placeholder="# Define your rules here..."
             />
           </div>
@@ -122,19 +122,19 @@ export default function RulesManager() {
               <Sparkles size={20} className="text-blue-600" />
               <h3 className="font-bold text-blue-950 dark:text-blue-50">How Rules Work</h3>
             </div>
-            <p className="text-sm text-blue-900 dark:text-blue-100 leading-relaxed mb-4">
+            <p className="text-sm text-slate-900 dark:text-slate-100 leading-relaxed mb-4">
               These rules are injected into the Agent's system instructions. When you ask the Agent to "Check this article" or "Fix WordPress," it will strictly follow these guidelines.
             </p>
             <ul className="space-y-3">
-              <li className="flex items-start gap-2 text-xs text-blue-800 dark:text-blue-200">
+              <li className="flex items-start gap-2 text-xs text-slate-800 dark:text-slate-100">
                 <CheckCircle2 size={14} className="shrink-0 mt-0.5" />
                 <span><strong>Content Review</strong>: Agent flags tone or SEO issues based on Section 1 & 2.</span>
               </li>
-              <li className="flex items-start gap-2 text-xs text-blue-800 dark:text-blue-200">
+              <li className="flex items-start gap-2 text-xs text-slate-800 dark:text-slate-100">
                 <CheckCircle2 size={14} className="shrink-0 mt-0.5" />
                 <span><strong>WordPress Fixes</strong>: Agent only suggests changes that align with Section 3.</span>
               </li>
-              <li className="flex items-start gap-2 text-xs text-blue-800 dark:text-blue-200">
+              <li className="flex items-start gap-2 text-xs text-slate-800 dark:text-slate-100">
                 <CheckCircle2 size={14} className="shrink-0 mt-0.5" />
                 <span><strong>Automations</strong>: Safety checks in Section 4 are enforced automatically.</span>
               </li>
@@ -146,7 +146,7 @@ export default function RulesManager() {
               <AlertCircle size={20} className="text-orange-500" />
               <h3 className="font-bold text-slate-950 dark:text-white text-sm">Safety Notice</h3>
             </div>
-            <p className="text-xs text-slate-700 dark:text-slate-200 leading-relaxed">
+            <p className="text-xs text-slate-800 dark:text-slate-100 leading-relaxed">
               Modifying these rules will immediately change the Agent's behavior. Be specific to ensure the Agent doesn't make unauthorized changes to your production site.
             </p>
           </div>
