@@ -64,7 +64,7 @@ export default function RulesManager() {
       <header className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-serif font-bold text-slate-950 dark:text-white">MCP Rules Engine</h2>
-          <p className="text-slate-600 dark:text-slate-400 text-sm">Define the standards the Agent uses to review content and manage WordPress.</p>
+          <p className="text-slate-700 dark:text-slate-200 text-sm">Define the standards the Agent uses to review content and manage WordPress.</p>
         </div>
         <div className="flex gap-3">
           <button
@@ -146,7 +146,7 @@ export default function RulesManager() {
               <AlertCircle size={20} className="text-orange-500" />
               <h3 className="font-bold text-slate-950 dark:text-white text-sm">Safety Notice</h3>
             </div>
-            <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+            <p className="text-xs text-slate-700 dark:text-slate-200 leading-relaxed">
               Modifying these rules will immediately change the Agent's behavior. Be specific to ensure the Agent doesn't make unauthorized changes to your production site.
             </p>
           </div>
