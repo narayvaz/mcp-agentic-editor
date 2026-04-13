@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain } from 'electron';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as net from 'node:net';
+import * as os from 'node:os';
 import * as path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { createRequire } from 'node:module';
@@ -35,6 +36,38 @@ const updaterState: UpdaterState = {
 
 let serverReadyPromise: Promise<string> | null = null;
 let updaterInitialized = false;
+
+function getConfigFilePath() {
+  return path.join(os.homedir(), '.mcp-agentic-editor', 'config.json');
+}
+
+function readRuntimeWorkspacePath(): string {
+  try {
+    const configPath = getConfigFilePath();
+    if (!fs.existsSync(configPath)) return '';
+    const raw = fs.readFileSync(configPath, 'utf-8');
+    const parsed = JSON.parse(raw) as { selfModification?: { workspacePath?: string } };
+    const configured = (parsed?.selfModification?.workspacePath || '').trim();
+    if (!configured) return '';
+    const resolved = path.resolve(configured);
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) return '';
+    return resolved;
+  } catch {
+    return '';
+  }
+}
+
+function resolveServerEntryPath(): { entryPath: string; source: 'workspace' | 'packaged' } {
+  const workspacePath = readRuntimeWorkspacePath();
+  if (workspacePath) {
+    const workspaceServerPath = path.join(workspacePath, 'dist-server', 'server.js');
+    if (fs.existsSync(workspaceServerPath) && fs.statSync(workspaceServerPath).isFile()) {
+      return { entryPath: workspaceServerPath, source: 'workspace' };
+    }
+  }
+
+  return { entryPath: path.join(app.getAppPath(), 'dist-server', 'server.js'), source: 'packaged' };
+}
 
 function ensureSafeCwd() {
   try {
@@ -187,8 +220,9 @@ async function startEmbeddedServer(): Promise<string> {
       const freePort = await getFreeLocalPort(Number.isFinite(PREFERRED_PORT) ? PREFERRED_PORT : 3000);
       process.env.PORT = String(freePort);
 
-      const serverEntry = path.join(app.getAppPath(), 'dist-server', 'server.js');
-      await import(pathToFileURL(serverEntry).href);
+      const runtimeServer = resolveServerEntryPath();
+      console.log(`[embedded-server] source=${runtimeServer.source} entry=${runtimeServer.entryPath}`);
+      await import(pathToFileURL(runtimeServer.entryPath).href);
 
       const baseUrl = `http://127.0.0.1:${freePort}`;
       await waitForHealthCheck(`${baseUrl}/api/health`);

@@ -678,33 +678,37 @@ function runSelfModQualityGate(workspacePath: string): { ok: boolean; detail: st
     return { ok: true, detail: "Quality gate skipped: npm executable not found in this runtime." };
   }
 
-  if (!hasNpmScript(workspacePath, "lint")) {
-    return { ok: true, detail: "Quality gate skipped: lint script not found." };
-  }
+  const checks: Array<{ script: string; timeoutMs: number }> = [
+    { script: "lint", timeoutMs: 150_000 },
+    { script: "build:server", timeoutMs: 180_000 },
+    { script: "build", timeoutMs: 210_000 },
+  ];
 
-  const lint = runCommandWithCapture(npmExecutable, ["run", "lint"], workspacePath, 150_000);
-  if (!lint.ok) {
-    if (isCommandNotAvailableFailure(lint) || isNodeRuntimeUnavailableFailure(lint)) {
-      return { ok: true, detail: "Quality gate skipped: npm is unavailable from app runtime environment." };
+  const executedChecks: string[] = [];
+
+  for (const check of checks) {
+    if (!hasNpmScript(workspacePath, check.script)) continue;
+
+    const result = runCommandWithCapture(npmExecutable, ["run", check.script], workspacePath, check.timeoutMs);
+    if (!result.ok) {
+      if (isCommandNotAvailableFailure(result) || isNodeRuntimeUnavailableFailure(result)) {
+        return {
+          ok: true,
+          detail: "Quality gate skipped: npm/node is unavailable from app runtime environment while running " + check.script + ".",
+        };
+      }
+      const reason = [result.stderr, result.stdout, result.detail].filter(Boolean).join(" ").slice(0, 420);
+      return { ok: false, detail: "npm run " + check.script + " failed: " + reason };
     }
-    const reason = [lint.stderr, lint.stdout, lint.detail].filter(Boolean).join(" ").slice(0, 420);
-    return { ok: false, detail: `npm run lint failed: ${reason}` };
+
+    executedChecks.push(check.script);
   }
 
-  if (!hasNpmScript(workspacePath, "build")) {
-    return { ok: true, detail: "Quality gate passed: lint." };
+  if (!executedChecks.length) {
+    return { ok: true, detail: "Quality gate skipped: no lint/build scripts found." };
   }
 
-  const build = runCommandWithCapture(npmExecutable, ["run", "build"], workspacePath, 210_000);
-  if (!build.ok) {
-    if (isCommandNotAvailableFailure(build) || isNodeRuntimeUnavailableFailure(build)) {
-      return { ok: true, detail: "Quality gate partially skipped: npm became unavailable before build check." };
-    }
-    const reason = [build.stderr, build.stdout, build.detail].filter(Boolean).join(" ").slice(0, 420);
-    return { ok: false, detail: `npm run build failed: ${reason}` };
-  }
-
-  return { ok: true, detail: "Quality gate passed: lint + build." };
+  return { ok: true, detail: "Quality gate passed: " + executedChecks.join(" + ") + "." };
 }
 
 function runSelfModGitSnapshot(workspacePath: string, targetRelativePath: string, instruction: string): { status: "ok" | "error" | "skipped"; detail: string } {
