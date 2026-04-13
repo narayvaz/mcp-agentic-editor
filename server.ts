@@ -959,7 +959,7 @@ async function generateSelfModProposal(
       },
     ],
     0.2,
-    45_000,
+    90_000,
   );
 
   const parsed = extractJsonObject(result.text || "");
@@ -1381,16 +1381,22 @@ async function generateWithModelFallback(
   temperature: number,
   timeoutMs = 90_000,
 ): Promise<{ text: string; modelUsed: string; fallback: boolean; warning?: string }> {
-  const runModel = async (model: string) =>
+  const runModel = async (model: string, runTimeoutMs = timeoutMs) =>
     withTimeout(
       ai.models.generateContent({
         model,
         contents,
         config: { temperature },
       }),
-      timeoutMs,
-      `Model ${model} timed out after ${Math.floor(timeoutMs / 1000)}s.`,
+      runTimeoutMs,
+      "Model " +
+        model +
+        " timed out after " +
+        Math.floor(runTimeoutMs / 1000) +
+        "s.",
     );
+
+  const isTimeoutError = (error: unknown) => /timed out|timeout|deadline exceeded/i.test(String(error || ""));
 
   try {
     const response = await runModel(requestedModel);
@@ -1400,16 +1406,47 @@ async function generateWithModelFallback(
       fallback: false,
     };
   } catch (primaryError) {
-    if (!fallbackModel || fallbackModel === requestedModel) {
-      throw primaryError;
+    if (isTimeoutError(primaryError)) {
+      try {
+        const retryResponse = await runModel(requestedModel, Math.min(180_000, Math.max(timeoutMs + 45_000, Math.floor(timeoutMs * 1.7))));
+        return {
+          text: retryResponse.text || "No response from model.",
+          modelUsed: requestedModel,
+          fallback: false,
+          warning: "Model " + requestedModel + " timed out once; retry succeeded.",
+        };
+      } catch (retryError) {
+        primaryError = retryError;
+      }
     }
-    const response = await runModel(fallbackModel);
-    return {
-      text: response.text || "No response from model.",
-      modelUsed: fallbackModel,
-      fallback: true,
-      warning: `Model ${requestedModel} failed and fallback model ${fallbackModel} was used.`,
-    };
+
+    if (fallbackModel && fallbackModel !== requestedModel) {
+      try {
+        const response = await runModel(fallbackModel);
+        return {
+          text: response.text || "No response from model.",
+          modelUsed: fallbackModel,
+          fallback: true,
+          warning: "Model " + requestedModel + " failed and fallback model " + fallbackModel + " was used.",
+        };
+      } catch (fallbackError) {
+        if (isTimeoutError(fallbackError)) {
+          const response = await runModel(
+            fallbackModel,
+            Math.min(180_000, Math.max(timeoutMs + 45_000, Math.floor(timeoutMs * 1.7))),
+          );
+          return {
+            text: response.text || "No response from model.",
+            modelUsed: fallbackModel,
+            fallback: true,
+            warning: "Model " + requestedModel + " failed; fallback model " + fallbackModel + " succeeded after retry.",
+          };
+        }
+        throw fallbackError;
+      }
+    }
+
+    throw primaryError;
   }
 }
 

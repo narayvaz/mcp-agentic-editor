@@ -1,7 +1,7 @@
 {
   "name": "mcp-agentic-editor",
   "private": true,
-  "version": "0.1.12",
+  "version": "0.1.13",
   "type": "module",
   "main": "dist-electron/main.js",
   "author": "Azat Television",
