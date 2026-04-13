@@ -1389,65 +1389,102 @@ async function generateWithModelFallback(
         config: { temperature },
       }),
       runTimeoutMs,
-      "Model " +
-        model +
-        " timed out after " +
-        Math.floor(runTimeoutMs / 1000) +
-        "s.",
+      "Model " + model + " timed out after " + Math.floor(runTimeoutMs / 1000) + "s.",
     );
 
   const isTimeoutError = (error: unknown) => /timed out|timeout|deadline exceeded/i.test(String(error || ""));
+  const isTransientModelError = (error: unknown) => {
+    const text = String(error || "").toLowerCase();
+    return (
+      isTimeoutError(error) ||
+      /\b503\b|\b429\b|unavailable|high demand|temporar|try again later|resource exhausted|rate limit|deadline exceeded|internal/.test(text)
+    );
+  };
+
+  const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+  const runModelWithRetries = async (
+    model: string,
+    baseTimeoutMs = timeoutMs,
+  ): Promise<{ response: { text?: string }; retries: number }> => {
+    const timeoutPlan = [
+      baseTimeoutMs,
+      Math.min(180_000, Math.max(baseTimeoutMs + 35_000, Math.floor(baseTimeoutMs * 1.5))),
+      Math.min(210_000, Math.max(baseTimeoutMs + 70_000, Math.floor(baseTimeoutMs * 2))),
+    ];
+
+    for (let attempt = 0; attempt < timeoutPlan.length; attempt++) {
+      try {
+        const response = await runModel(model, timeoutPlan[attempt]);
+        return { response, retries: attempt };
+      } catch (error) {
+        if (!isTransientModelError(error) || attempt === timeoutPlan.length - 1) {
+          throw error;
+        }
+        await wait(800 * (attempt + 1));
+      }
+    }
+
+    throw new Error("Model call failed unexpectedly without explicit error.");
+  };
+
+  let lastError: unknown = null;
 
   try {
-    const response = await runModel(requestedModel);
+    const primary = await runModelWithRetries(requestedModel);
     return {
-      text: response.text || "No response from model.",
+      text: primary.response.text || "No response from model.",
       modelUsed: requestedModel,
       fallback: false,
+      warning:
+        primary.retries > 0
+          ? "Model " + requestedModel + " succeeded after " + primary.retries + " retry(s)."
+          : undefined,
     };
   } catch (primaryError) {
-    if (isTimeoutError(primaryError)) {
-      try {
-        const retryResponse = await runModel(requestedModel, Math.min(180_000, Math.max(timeoutMs + 45_000, Math.floor(timeoutMs * 1.7))));
-        return {
-          text: retryResponse.text || "No response from model.",
-          modelUsed: requestedModel,
-          fallback: false,
-          warning: "Model " + requestedModel + " timed out once; retry succeeded.",
-        };
-      } catch (retryError) {
-        primaryError = retryError;
-      }
-    }
-
-    if (fallbackModel && fallbackModel !== requestedModel) {
-      try {
-        const response = await runModel(fallbackModel);
-        return {
-          text: response.text || "No response from model.",
-          modelUsed: fallbackModel,
-          fallback: true,
-          warning: "Model " + requestedModel + " failed and fallback model " + fallbackModel + " was used.",
-        };
-      } catch (fallbackError) {
-        if (isTimeoutError(fallbackError)) {
-          const response = await runModel(
-            fallbackModel,
-            Math.min(180_000, Math.max(timeoutMs + 45_000, Math.floor(timeoutMs * 1.7))),
-          );
-          return {
-            text: response.text || "No response from model.",
-            modelUsed: fallbackModel,
-            fallback: true,
-            warning: "Model " + requestedModel + " failed; fallback model " + fallbackModel + " succeeded after retry.",
-          };
-        }
-        throw fallbackError;
-      }
-    }
-
-    throw primaryError;
+    lastError = primaryError;
   }
+
+  if (fallbackModel && fallbackModel !== requestedModel) {
+    try {
+      const fallback = await runModelWithRetries(fallbackModel);
+      return {
+        text: fallback.response.text || "No response from model.",
+        modelUsed: fallbackModel,
+        fallback: true,
+        warning:
+          "Model " +
+          requestedModel +
+          " failed and fallback model " +
+          fallbackModel +
+          " was used." +
+          (fallback.retries > 0 ? " Fallback needed " + fallback.retries + " retry(s)." : ""),
+      };
+    } catch (fallbackError) {
+      lastError = fallbackError;
+    }
+  }
+
+  const emergencyModel = "gemini-3-flash-preview";
+  if (emergencyModel !== requestedModel && emergencyModel !== fallbackModel) {
+    try {
+      const emergency = await runModelWithRetries(emergencyModel, Math.max(90_000, timeoutMs));
+      return {
+        text: emergency.response.text || "No response from model.",
+        modelUsed: emergencyModel,
+        fallback: true,
+        warning:
+          "Primary/fallback models failed. Emergency model " +
+          emergencyModel +
+          " was used." +
+          (emergency.retries > 0 ? " Emergency needed " + emergency.retries + " retry(s)." : ""),
+      };
+    } catch (emergencyError) {
+      lastError = emergencyError;
+    }
+  }
+
+  throw lastError;
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
