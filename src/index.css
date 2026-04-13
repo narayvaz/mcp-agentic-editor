@@ -20,7 +20,7 @@
   --liquid-shadow: 0 22px 44px rgba(32, 83, 94, 0.16);
   --liquid-blur: 22px;
   --liquid-glow: rgba(248, 255, 253, 0.93);
-  --mcp-text-color: #0fb7b2;
+  --mcp-text-color: #0d9488;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -36,7 +36,7 @@
     --liquid-stroke: rgba(177, 232, 222, 0.32);
     --liquid-shadow: 0 24px 44px rgba(3, 18, 22, 0.48);
     --liquid-glow: rgba(217, 250, 242, 0.35);
-    --mcp-text-color: #5bd8d1;
+    --mcp-text-color: #5eead4;
   }
 }
 
