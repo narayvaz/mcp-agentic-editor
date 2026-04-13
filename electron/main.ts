@@ -97,6 +97,50 @@ function isUpdaterSupported(): boolean {
   return app.isPackaged;
 }
 
+function isTransientUpdaterError(error: unknown): boolean {
+  const message = String(error || '').toLowerCase();
+  return /\b502\b|\b503\b|\b504\b|gateway time-?out|timed out|econnreset|etimedout|network error|temporar|unavailable|cannot parse releases feed|unable to find latest version on github|rate limit|failed to fetch/.test(
+    message,
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function checkForUpdatesWithRetry(maxAttempts = 4): Promise<void> {
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await autoUpdater.checkForUpdates();
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!isTransientUpdaterError(error) || attempt === maxAttempts) {
+        throw error;
+      }
+
+      const delayMs = Math.min(15_000, 1_200 * attempt * attempt);
+      setUpdaterState({
+        status: 'checking',
+        message:
+          'Update check temporarily failed (' +
+          attempt +
+          '/' +
+          maxAttempts +
+          '). Retrying in ' +
+          Math.max(1, Math.round(delayMs / 1000)) +
+          's...',
+        progress: 0,
+      });
+      await sleep(delayMs);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError || 'Update check failed.'));
+}
+
 function setupAutoUpdater() {
   if (updaterInitialized || !isUpdaterSupported()) return;
   updaterInitialized = true;
@@ -149,9 +193,12 @@ function setupAutoUpdater() {
   });
 
   autoUpdater.on('error', (error) => {
+    const transient = isTransientUpdaterError(error);
     setUpdaterState({
-      status: 'error',
-      message: error?.message || String(error),
+      status: transient ? 'idle' : 'error',
+      message: transient
+        ? 'GitHub update feed is temporarily unavailable. Please try again in a moment.'
+        : error?.message || String(error),
       progress: 0,
     });
   });
@@ -259,8 +306,11 @@ async function createWindow() {
   if (isUpdaterSupported()) {
     setupAutoUpdater();
     setTimeout(() => {
-      autoUpdater.checkForUpdates().catch((error) => {
-        setUpdaterState({ status: 'error', message: String(error) });
+      checkForUpdatesWithRetry(4).catch((error) => {
+        const message = isTransientUpdaterError(error)
+          ? 'GitHub update feed timed out. Please try again in a minute.'
+          : String(error);
+        setUpdaterState({ status: 'error', message });
       });
     }, 1200);
   }
@@ -277,11 +327,14 @@ ipcMain.handle('updater:check', async () => {
 
   try {
     setupAutoUpdater();
-    await autoUpdater.checkForUpdates();
+    await checkForUpdatesWithRetry(4);
     return { ok: true, state: updaterState };
   } catch (error) {
-    setUpdaterState({ status: 'error', message: String(error) });
-    return { ok: false, message: String(error), state: updaterState };
+    const message = isTransientUpdaterError(error)
+      ? 'GitHub update feed timed out after retries. Please try again shortly.'
+      : String(error);
+    setUpdaterState({ status: 'error', message });
+    return { ok: false, message, state: updaterState };
   }
 });
 
