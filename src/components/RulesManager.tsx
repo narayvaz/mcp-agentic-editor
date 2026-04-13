@@ -63,13 +63,13 @@ export default function RulesManager() {
     <div className="max-w-5xl space-y-8">
       <header className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-serif font-bold text-gray-900">MCP Rules Engine</h2>
-          <p className="text-gray-500 text-sm">Define the standards the Agent uses to review content and manage WordPress.</p>
+          <h2 className="text-2xl font-serif font-bold text-slate-950 dark:text-white">MCP Rules Engine</h2>
+          <p className="text-slate-600 dark:text-slate-400 text-sm">Define the standards the Agent uses to review content and manage WordPress.</p>
         </div>
         <div className="flex gap-3">
           <button
             onClick={() => setRules(DEFAULT_RULES)}
-            className="flex items-center gap-2 px-4 py-2 text-gray-600 bg-white border border-gray-200 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors"
+            className="flex items-center gap-2 px-4 py-2 text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
           >
             <RefreshCw size={16} />
             Reset to Default
@@ -95,58 +95,58 @@ export default function RulesManager() {
       </header>
 
       {error && (
-        <div className="bg-red-50 border border-red-100 text-red-700 text-sm p-4 rounded-xl">
+        <div className="bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-800 text-red-700 dark:text-red-400 text-sm p-4 rounded-xl">
           {error}
         </div>
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         <div className="lg:col-span-2 space-y-6">
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-            <div className="flex items-center gap-2 px-6 py-4 bg-gray-50 border-b border-gray-100">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-800 overflow-hidden">
+            <div className="flex items-center gap-2 px-6 py-4 bg-slate-50 dark:bg-slate-800/50 border-b border-slate-100 dark:border-slate-800">
               <ScrollText size={18} className="text-blue-600" />
-              <span className="text-sm font-bold text-gray-700">Rules Definition (Markdown)</span>
+              <span className="text-sm font-bold text-slate-800 dark:text-slate-100">Rules Definition (Markdown)</span>
             </div>
             <textarea 
               value={rules}
               onChange={(e) => setRules(e.target.value)}
-              className="w-full h-[600px] p-8 font-mono text-sm text-gray-800 bg-white focus:outline-none resize-none leading-relaxed"
+              className="w-full h-[600px] p-8 font-mono text-sm text-slate-900 dark:text-slate-50 bg-white dark:bg-slate-900 focus:outline-none resize-none leading-relaxed"
               placeholder="# Define your rules here..."
             />
           </div>
         </div>
 
         <div className="space-y-6">
-          <div className="bg-blue-50 p-6 rounded-2xl border border-blue-100">
+          <div className="bg-blue-50 dark:bg-blue-900/20 p-6 rounded-2xl border border-blue-100 dark:border-blue-800">
             <div className="flex items-center gap-3 mb-4">
               <Sparkles size={20} className="text-blue-600" />
-              <h3 className="font-bold text-blue-900">How Rules Work</h3>
+              <h3 className="font-bold text-blue-950 dark:text-blue-50">How Rules Work</h3>
             </div>
-            <p className="text-sm text-blue-800 leading-relaxed mb-4">
+            <p className="text-sm text-blue-900 dark:text-blue-100 leading-relaxed mb-4">
               These rules are injected into the Agent's system instructions. When you ask the Agent to "Check this article" or "Fix WordPress," it will strictly follow these guidelines.
             </p>
             <ul className="space-y-3">
-              <li className="flex items-start gap-2 text-xs text-blue-700">
+              <li className="flex items-start gap-2 text-xs text-blue-800 dark:text-blue-200">
                 <CheckCircle2 size={14} className="shrink-0 mt-0.5" />
                 <span><strong>Content Review</strong>: Agent flags tone or SEO issues based on Section 1 & 2.</span>
               </li>
-              <li className="flex items-start gap-2 text-xs text-blue-700">
+              <li className="flex items-start gap-2 text-xs text-blue-800 dark:text-blue-200">
                 <CheckCircle2 size={14} className="shrink-0 mt-0.5" />
                 <span><strong>WordPress Fixes</strong>: Agent only suggests changes that align with Section 3.</span>
               </li>
-              <li className="flex items-start gap-2 text-xs text-blue-700">
+              <li className="flex items-start gap-2 text-xs text-blue-800 dark:text-blue-200">
                 <CheckCircle2 size={14} className="shrink-0 mt-0.5" />
                 <span><strong>Automations</strong>: Safety checks in Section 4 are enforced automatically.</span>
               </li>
             </ul>
           </div>
 
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+          <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-800">
             <div className="flex items-center gap-3 mb-4">
               <AlertCircle size={20} className="text-orange-500" />
-              <h3 className="font-bold text-gray-900 text-sm">Safety Notice</h3>
+              <h3 className="font-bold text-slate-950 dark:text-white text-sm">Safety Notice</h3>
             </div>
-            <p className="text-xs text-gray-500 leading-relaxed">
+            <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
               Modifying these rules will immediately change the Agent's behavior. Be specific to ensure the Agent doesn't make unauthorized changes to your production site.
             </p>
           </div>
