@@ -135,6 +135,43 @@ function formatExecutionAudit(execution?: SelfModificationExecution): string {
   ].join('\n');
 }
 
+function isTransientFetchError(error: unknown): boolean {
+  const message = String(error || '').toLowerCase();
+  return /failed to fetch|networkerror|network request failed|load failed|econnrefused|econnreset|timed out|timeout/.test(message);
+}
+
+async function fetchJsonWithRetry<T>(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  attempts = 4,
+): Promise<{ response: Response; payload: T | null }> {
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const response = await fetch(input, init);
+      const raw = await response.text();
+      let payload: T | null = null;
+      if (raw) {
+        try {
+          payload = JSON.parse(raw) as T;
+        } catch {
+          payload = null;
+        }
+      }
+      return { response, payload };
+    } catch (error) {
+      lastError = error;
+      if (!isTransientFetchError(error) || attempt === attempts) {
+        throw error;
+      }
+      const delayMs = Math.min(2200, 350 * attempt * attempt);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError || 'Request failed.'));
+}
 function migrateLegacyMessages(raw: string | null): ChatThread[] {
   if (!raw) return [];
   try {
@@ -437,17 +474,21 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
     if (!selfModProposal || !selfModApprovalInput.trim()) return;
     setIsSelfModBusy(true);
     try {
-      const response = await fetch('/api/self-mod/apply', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          proposalId: selfModProposal.proposalId,
-          approvalCode: selfModApprovalInput.trim(),
-        }),
-      });
-      const payload = (await response.json()) as SelfModApplyResponse;
-      if (!response.ok || !payload.ok) {
-        pushAgentMessage(`Self-mod apply failed: ${payload.message || 'Unknown error'}`);
+      const { response, payload } = await fetchJsonWithRetry<SelfModApplyResponse>(
+        '/api/self-mod/apply',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            proposalId: selfModProposal.proposalId,
+            approvalCode: selfModApprovalInput.trim(),
+          }),
+        },
+        4,
+      );
+
+      if (!response.ok || !payload?.ok) {
+        pushAgentMessage(`Self-mod apply failed: ${payload?.message || `HTTP ${response.status}`}`);
         return;
       }
       const audit = formatExecutionAudit(payload.execution);
@@ -460,7 +501,10 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
       setSelfModApprovalInput('');
       setSelfModMode(false);
     } catch (error) {
-      pushAgentMessage(`Self-mod apply failed: ${String(error)}`);
+      const detail = isTransientFetchError(error)
+        ? 'Backend was temporarily unreachable (likely restart or local network hiccup). Please retry in a few seconds.'
+        : String(error);
+      pushAgentMessage(`Self-mod apply failed: ${detail}`);
     } finally {
       setIsSelfModBusy(false);
     }
@@ -504,38 +548,51 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
       setIsSelfModBusy(true);
       try {
         if (!selfModTargetFile.trim()) {
-          const response = await fetch('/api/self-mod/auto', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
+          const { response, payload } = await fetchJsonWithRetry<SelfModAutoResponse>(
+            '/api/self-mod/auto',
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                instruction: userPrompt,
+              }),
             },
-            body: JSON.stringify({
-              instruction: userPrompt,
-            }),
-          });
+            4,
+          );
 
-          const payload = (await response.json()) as SelfModAutoResponse;
+          if (!response.ok || !payload) {
+            pushAgentMessage(`Self-mod auto failed: ${payload?.message || `HTTP ${response.status}`}`);
+            setIsTyping(false);
+            setIsSelfModBusy(false);
+            return;
+          }
+
           const audit = formatExecutionAudit(payload.execution);
           pushAgentMessage([payload.message || 'Self-mod auto execution completed.', audit].filter(Boolean).join('\n\n'));
           if (payload.ok) {
             setSelfModMode(false);
           }
         } else {
-          const response = await fetch('/api/self-mod/propose', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
+          const { response, payload } = await fetchJsonWithRetry<SelfModProposalResponse>(
+            '/api/self-mod/propose',
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                targetFile: selfModTargetFile.trim(),
+                instruction: userPrompt,
+                autoApply: selfModAutoApplyEnabled,
+              }),
             },
-            body: JSON.stringify({
-              targetFile: selfModTargetFile.trim(),
-              instruction: userPrompt,
-              autoApply: selfModAutoApplyEnabled,
-            }),
-          });
+            4,
+          );
 
-          const payload = (await response.json()) as SelfModProposalResponse;
-          if (!response.ok || !payload.proposalId) {
-            pushAgentMessage(`Self-mod proposal failed: ${payload.message || 'Unknown error'}`);
+          if (!response.ok || !payload?.proposalId) {
+            pushAgentMessage(`Self-mod proposal failed: ${payload?.message || `HTTP ${response.status}`}`);
             setIsTyping(false);
             setIsSelfModBusy(false);
             return;
@@ -579,7 +636,10 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
           }
         }
       } catch (error) {
-        pushAgentMessage(`Self-mod proposal failed: ${String(error)}`);
+        const detail = isTransientFetchError(error)
+          ? 'Backend was temporarily unreachable (likely restart or local network hiccup). Please retry in a few seconds.'
+          : String(error);
+        pushAgentMessage(`Self-mod proposal failed: ${detail}`);
       } finally {
         setIsTyping(false);
         setIsSelfModBusy(false);
