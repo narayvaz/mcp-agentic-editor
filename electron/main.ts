@@ -108,7 +108,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function checkForUpdatesWithRetry(maxAttempts = 4): Promise<void> {
+async function checkForUpdatesWithRetry(maxAttempts = 5): Promise<void> {
   let lastError: unknown = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -122,18 +122,6 @@ async function checkForUpdatesWithRetry(maxAttempts = 4): Promise<void> {
       }
 
       const delayMs = Math.min(15_000, 1_200 * attempt * attempt);
-      setUpdaterState({
-        status: 'checking',
-        message:
-          'Update check temporarily failed (' +
-          attempt +
-          '/' +
-          maxAttempts +
-          '). Retrying in ' +
-          Math.max(1, Math.round(delayMs / 1000)) +
-          's...',
-        progress: 0,
-      });
       await sleep(delayMs);
     }
   }
@@ -194,11 +182,11 @@ function setupAutoUpdater() {
 
   autoUpdater.on('error', (error) => {
     const transient = isTransientUpdaterError(error);
+    if (transient && updaterState.status === 'checking') return;
+
     setUpdaterState({
-      status: transient ? 'idle' : 'error',
-      message: transient
-        ? 'GitHub update feed is temporarily unavailable. Please try again in a moment.'
-        : error?.message || String(error),
+      status: 'error',
+      message: error?.message || String(error),
       progress: 0,
     });
   });
@@ -306,9 +294,9 @@ async function createWindow() {
   if (isUpdaterSupported()) {
     setupAutoUpdater();
     setTimeout(() => {
-      checkForUpdatesWithRetry(4).catch((error) => {
+      checkForUpdatesWithRetry(5).catch((error) => {
         const message = isTransientUpdaterError(error)
-          ? 'GitHub update feed timed out. Please try again in a minute.'
+          ? 'GitHub update feed is temporarily unavailable after multiple attempts.'
           : String(error);
         setUpdaterState({ status: 'error', message });
       });
@@ -327,11 +315,11 @@ ipcMain.handle('updater:check', async () => {
 
   try {
     setupAutoUpdater();
-    await checkForUpdatesWithRetry(4);
+    await checkForUpdatesWithRetry(5);
     return { ok: true, state: updaterState };
   } catch (error) {
     const message = isTransientUpdaterError(error)
-      ? 'GitHub update feed timed out after retries. Please try again shortly.'
+      ? 'GitHub update feed is temporarily unavailable after multiple attempts.'
       : String(error);
     setUpdaterState({ status: 'error', message });
     return { ok: false, message, state: updaterState };
