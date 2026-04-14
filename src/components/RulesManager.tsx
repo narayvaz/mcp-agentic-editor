@@ -64,12 +64,12 @@ export default function RulesManager() {
       <header className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-serif font-bold text-slate-950 dark:text-white">MCP Rules Engine</h2>
-          <p className="text-slate-900 dark:text-slate-50 text-sm">Define the standards the Agent uses to review content and manage WordPress.</p>
+          <p className="text-slate-950 dark:text-white text-sm">Define the standards the Agent uses to review content and manage WordPress.</p>
         </div>
         <div className="flex gap-3">
           <button
             onClick={() => setRules(DEFAULT_RULES)}
-            className="flex items-center gap-2 px-4 py-2 text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
+            className="flex items-center gap-2 px-4 py-2 text-slate-950 dark:text-white bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
           >
             <RefreshCw size={16} />
             Reset to Default
@@ -110,7 +110,7 @@ export default function RulesManager() {
             <textarea 
               value={rules}
               onChange={(e) => setRules(e.target.value)}
-              className="w-full h-[600px] p-8 font-mono text-sm text-slate-950 dark:text-slate-100 bg-white dark:bg-slate-900 focus:outline-none resize-none leading-relaxed"
+              className="w-full h-[600px] p-8 font-mono text-sm text-slate-950 dark:text-white bg-white dark:bg-slate-900 focus:outline-none resize-none leading-relaxed"
               placeholder="# Define your rules here..."
             />
           </div>
@@ -122,7 +122,7 @@ export default function RulesManager() {
               <Sparkles size={20} className="text-blue-600" />
               <h3 className="font-bold text-blue-950 dark:text-blue-50">How Rules Work</h3>
             </div>
-            <p className="text-sm text-slate-900 dark:text-slate-100 leading-relaxed mb-4">
+            <p className="text-sm text-slate-950 dark:text-white leading-relaxed mb-4">
               These rules are injected into the Agent's system instructions. When you ask the Agent to "Check this article" or "Fix WordPress," it will strictly follow these guidelines.
             </p>
             <ul className="space-y-3">
