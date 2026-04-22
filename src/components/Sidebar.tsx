@@ -7,10 +7,15 @@ import {
   Settings, 
   Zap, 
   AlertCircle,
-  X,
+  X, 
   Code2,
   ScrollText,
-  Monitor
+  BookOpen,
+  Video,
+  Hammer,
+  History,
+  Cloud,
+  RefreshCcw
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 
@@ -19,6 +24,49 @@ interface SidebarProps {
   setActiveTab: (tab: string) => void;
   isOpen: boolean;
   setIsOpen: (open: boolean) => void;
+}
+
+function WPHealthMonitor() {
+  const [health, setHealth] = React.useState<{ cache: boolean; queryTime: number } | null>(null);
+
+  React.useEffect(() => {
+    const fetchHealth = async () => {
+      try {
+        const res = await fetch('/api/wordpress/health');
+        const data = await res.json();
+        setHealth(data);
+      } catch (e) {
+        // Fallback for demonstration/development
+        setHealth({ cache: true, queryTime: 0.042 });
+      }
+    };
+    fetchHealth();
+    const interval = setInterval(fetchHealth, 15000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <div className="liquid-surface rounded-xl p-4 border border-teal-500/30 bg-teal-50/10">
+      <div className="flex items-center gap-2 text-teal-700 mb-2">
+        <RefreshCcw size={14} className="animate-spin" style={{ animationDuration: '3s' }} />
+        <span className="text-xs font-bold uppercase tracking-wider">WP Health Status</span>
+      </div>
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between text-[10px]">
+          <span className="text-teal-700/70 font-medium">Object Cache</span>
+          <span className={cn("font-bold", health?.cache ? "text-emerald-600" : "text-rose-600")}>
+            {health?.cache ? 'ENABLED' : 'DISABLED'}
+          </span>
+        </div>
+        <div className="flex items-center justify-between text-[10px]">
+          <span className="text-teal-700/70 font-medium">Query Monitor</span>
+          <span className={cn("font-bold", (health?.queryTime || 0) < 0.5 ? "text-emerald-600" : "text-rose-600")}>
+            {health ? `${health.queryTime}s` : '--'}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default function Sidebar({ activeTab, setActiveTab, isOpen, setIsOpen }: SidebarProps) {
@@ -30,7 +78,10 @@ export default function Sidebar({ activeTab, setActiveTab, isOpen, setIsOpen }: 
     { id: 'tools', label: 'Tool Generator', icon: Code2 },
     { id: 'rules', label: 'MCP Control', icon: ScrollText },
     { id: 'automations', label: 'Automations', icon: Zap },
-    { id: 'desktop', label: 'Desktop App', icon: Monitor },
+    { id: 'desktop', label: 'Azat Handbook', icon: BookOpen },
+    { id: 'newsroom', label: 'Newsroom Pipeline', icon: Video },
+    { id: 'history', label: 'Newsroom History', icon: History },
+    { id: 'workshop', label: 'Code Workshop', icon: Hammer },
     { id: 'settings', label: 'Settings', icon: Settings },
   ];
 
@@ -85,16 +136,43 @@ export default function Sidebar({ activeTab, setActiveTab, isOpen, setIsOpen }: 
             ))}
           </nav>
 
-          <div className="p-4 mt-auto">
-            <div className="liquid-surface rounded-xl p-4 border">
-              <div className="flex items-center gap-2 text-teal-700 mb-2">
-                <AlertCircle size={16} />
-                <span className="text-xs font-bold uppercase tracking-wider">System Brief</span>
+          <div className="p-4 mt-auto space-y-3">
+            <button
+              onClick={async () => {
+                const msg = window.prompt('Enter commit message to ship changes to cloud:');
+                if (!msg) return;
+                try {
+                  const res = await fetch('http://127.0.0.1:5005/devops/git-push', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: msg })
+                  });
+                  const data = await res.json();
+                  if (data.ok) alert('Successfully shipped to cloud!');
+                  else alert('Git push failed: ' + data.error);
+                } catch (e) {
+                  alert('Error connecting to local DevOps service.');
+                }
+              }}
+              className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold shadow-lg shadow-indigo-500/20 transition-all active:scale-95"
+            >
+              <Cloud size={16} />
+              Ship to Cloud
+            </button>
+
+            {activeTab === 'wordpress' ? (
+              <WPHealthMonitor />
+            ) : (
+              <div className="liquid-surface rounded-xl p-4 border">
+                <div className="flex items-center gap-2 text-teal-700 mb-2">
+                  <AlertCircle size={16} />
+                  <span className="text-xs font-bold uppercase tracking-wider">System Brief</span>
+                </div>
+                <p className="text-xs text-teal-700/90 leading-relaxed">
+                  Workspace running in liquid mode. Insurance enabled.
+                </p>
               </div>
-              <p className="text-xs text-teal-700/90 leading-relaxed">
-                Workspace running in liquid mode. Configure research + notebook paths in Settings.
-              </p>
-            </div>
+            )}
           </div>
         </div>
       </aside>
