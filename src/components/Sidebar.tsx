@@ -188,19 +188,7 @@ export default function Sidebar({ activeTab, setActiveTab, isOpen, setIsOpen }: 
               Ship to Cloud
             </button>
 
-            {activeTab === 'wordpress' ? (
-              <WPHealthMonitor />
-            ) : (
-              <div className="liquid-surface rounded-xl p-4 border">
-                <div className="flex items-center gap-2 text-teal-700 mb-2">
-                  <AlertCircle size={16} />
-                  <span className="text-xs font-bold uppercase tracking-wider">System Brief</span>
-                </div>
-                <p className="text-xs text-teal-700/90 leading-relaxed">
-                  Workspace running in liquid mode. Insurance enabled.
-                </p>
-              </div>
-            )}
+            <WPHealthMonitor />
           </div>
         </div>
       </aside>
