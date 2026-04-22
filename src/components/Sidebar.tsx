@@ -28,43 +28,71 @@ interface SidebarProps {
 
 function WPHealthMonitor() {
   const [health, setHealth] = React.useState<{ cache: boolean; queryTime: number } | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
+
+  const fetchHealth = async () => {
+    try {
+      const res = await fetch('/api/wordpress/health');
+      if (!res.ok) throw new Error('Failed to fetch health data');
+      const data = await res.json();
+      setHealth(data);
+      setError(null);
+    } catch (e) {
+      setError('Connection error');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   React.useEffect(() => {
-    const fetchHealth = async () => {
-      try {
-        const res = await fetch('/api/wordpress/health');
-        const data = await res.json();
-        setHealth(data);
-      } catch (e) {
-        // Fallback for demonstration/development
-        setHealth({ cache: true, queryTime: 0.042 });
-      }
-    };
     fetchHealth();
     const interval = setInterval(fetchHealth, 15000);
     return () => clearInterval(interval);
   }, []);
 
+  if (loading && !health) {
+    return (
+      <div className="liquid-surface rounded-xl p-4 border border-teal-500/30 bg-teal-50/10 animate-pulse">
+        <div className="h-3 w-24 bg-teal-200/20 rounded mb-3" />
+        <div className="space-y-2">
+          <div className="h-2 w-full bg-teal-200/20 rounded" />
+          <div className="h-2 w-2/3 bg-teal-200/20 rounded" />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="liquid-surface rounded-xl p-4 border border-teal-500/30 bg-teal-50/10">
-      <div className="flex items-center gap-2 text-teal-700 mb-2">
-        <RefreshCcw size={14} className="animate-spin" style={{ animationDuration: '3s' }} />
-        <span className="text-xs font-bold uppercase tracking-wider">WP Health Status</span>
-      </div>
-      <div className="space-y-1.5">
-        <div className="flex items-center justify-between text-[10px]">
-          <span className="text-teal-700/70 font-medium">Object Cache</span>
-          <span className={cn("font-bold", health?.cache ? "text-emerald-600" : "text-rose-600")}>
-            {health?.cache ? 'ENABLED' : 'DISABLED'}
-          </span>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2 text-teal-700">
+          <RefreshCcw size={14} className={cn("animate-spin", loading && "opacity-50")} style={{ animationDuration: '3s' }} />
+          <span className="text-xs font-bold uppercase tracking-wider">WP Health Status</span>
         </div>
-        <div className="flex items-center justify-between text-[10px]">
-          <span className="text-teal-700/70 font-medium">Query Monitor</span>
-          <span className={cn("font-bold", (health?.queryTime || 0) < 0.5 ? "text-emerald-600" : "text-rose-600")}>
-            {health ? `${health.queryTime}s` : '--'}
-          </span>
-        </div>
+        {error && <AlertCircle size={14} className="text-rose-500" />}
       </div>
+      
+      {error ? (
+        <div className="text-[10px] text-rose-600 font-medium py-1">
+          {error}. Retrying...
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between text-[10px]">
+            <span className="text-teal-700/70 font-medium">Object Cache</span>
+            <span className={cn("font-bold", health?.cache ? "text-emerald-600" : "text-rose-600")}>
+              {health?.cache ? 'ENABLED' : 'DISABLED'}
+            </span>
+          </div>
+          <div className="flex items-center justify-between text-[10px]">
+            <span className="text-teal-700/70 font-medium">Query Monitor</span>
+            <span className={cn("font-bold", (health?.queryTime || 0) < 0.5 ? "text-emerald-600" : "text-rose-600")}>
+              {health ? `${health.queryTime}s` : '--'}
+            </span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
