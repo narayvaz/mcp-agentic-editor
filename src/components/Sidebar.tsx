@@ -26,17 +26,22 @@ interface SidebarProps {
   setIsOpen: (open: boolean) => void;
 }
 
-function WPHealthMonitor() {
-  const [health, setHealth] = React.useState<{ cache: boolean; queryTime: number } | null>(null);
+function WPHealthMonitor({ activeTab, setActiveTab }: { activeTab: string; setActiveTab: (tab: string) => void }) {
+  const [health, setHealth] = React.useState<{ cache: boolean; queryTime: number; lastCheck: string } | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
 
   const fetchHealth = async () => {
+    setLoading(true);
     try {
       const res = await fetch('/api/wordpress/health');
       if (!res.ok) throw new Error('Failed to fetch health data');
       const data = await res.json();
-      setHealth(data);
+      setHealth({
+        cache: data.cache,
+        queryTime: data.queryTime,
+        lastCheck: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      });
       setError(null);
     } catch (e) {
       setError('Connection error');
@@ -47,7 +52,7 @@ function WPHealthMonitor() {
 
   React.useEffect(() => {
     fetchHealth();
-    const interval = setInterval(fetchHealth, 15000);
+    const interval = setInterval(fetchHealth, 30000);
     return () => clearInterval(interval);
   }, []);
 
@@ -63,34 +68,56 @@ function WPHealthMonitor() {
     );
   }
 
+  const isHealthy = health && health.cache && health.queryTime <= 0.5;
+
   return (
-    <div className="liquid-surface rounded-xl p-4 border border-teal-500/30 bg-teal-50/10">
+    <div 
+      onClick={() => setActiveTab('wordpress')}
+      className={cn(
+        "liquid-surface rounded-xl p-4 border transition-all cursor-pointer group",
+        activeTab === 'wordpress' ? "border-teal-500 bg-teal-50/20" : "border-teal-500/30 bg-teal-50/10 hover:border-teal-500/50"
+      )}
+    >
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2 text-teal-700">
-          <RefreshCcw size={14} className={cn("animate-spin", loading && "opacity-50")} style={{ animationDuration: '3s' }} />
+          <RefreshCcw 
+            size={14} 
+            className={cn(loading && "animate-spin")}
+            onClick={(e) => {
+              e.stopPropagation();
+              fetchHealth();
+            }}
+          />
           <span className="text-xs font-bold uppercase tracking-wider">WP Health Status</span>
         </div>
-        {error && <AlertCircle size={14} className="text-rose-500" />}
+        {health && (
+          <div className={cn("w-2 h-2 rounded-full shadow-sm", isHealthy ? "bg-emerald-500" : "bg-rose-500")} />
+        )}
       </div>
       
       {error ? (
         <div className="text-[10px] text-rose-600 font-medium py-1">
-          {error}. Retrying...
+          {error}. Click to retry.
         </div>
       ) : (
         <div className="space-y-1.5">
           <div className="flex items-center justify-between text-[10px]">
-            <span className="text-teal-700/70 font-medium">Object Cache</span>
+            <span className="text-teal-700/70 font-medium">Object Cache (LSCache)</span>
             <span className={cn("font-bold", health?.cache ? "text-emerald-600" : "text-rose-600")}>
-              {health?.cache ? 'ENABLED' : 'DISABLED'}
+              {health ? (health.cache ? 'ENABLED' : 'DISABLED') : '--'}
             </span>
           </div>
           <div className="flex items-center justify-between text-[10px]">
-            <span className="text-teal-700/70 font-medium">Query Monitor</span>
-            <span className={cn("font-bold", (health?.queryTime || 0) < 0.5 ? "text-emerald-600" : "text-rose-600")}>
+            <span className="text-teal-700/70 font-medium">Query Monitor (&lt;0.5s)</span>
+            <span className={cn("font-bold", (health?.queryTime || 0) <= 0.5 ? "text-emerald-600" : "text-rose-600")}>
               {health ? `${health.queryTime}s` : '--'}
             </span>
           </div>
+          {health && (
+            <div className="text-[8px] text-teal-600/40 text-right mt-1">
+              Last check: {health.lastCheck}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -188,7 +215,7 @@ export default function Sidebar({ activeTab, setActiveTab, isOpen, setIsOpen }: 
               Ship to Cloud
             </button>
 
-            <WPHealthMonitor />
+            <WPHealthMonitor activeTab={activeTab} setActiveTab={setActiveTab} />
           </div>
         </div>
       </aside>
