@@ -16,66 +16,65 @@ export default function NewsroomPipeline() {
     script_text: '',
     logs: []
   });
-  
-  const [scriptInput, setScriptInput] = useState('');
-  const [promptInput, setPromptInput] = useState('Generate a professional news script based on the notebook sources.');
-  const [isGeneratingScript, setIsGeneratingScript] = useState(false);
+  const [script, setScript] = useState('');
   const [projectName, setProjectName] = useState('');
-  const [anchorFile, setAnchorFile] = useState('anchor_animated_looped.mp4');
-  const [notebookId, setNotebookId] = useState('b8eb54eb-c05d-4117-8fbf-bcbbf3dadbd3');
+  const [selectedAnchor, setSelectedAnchor] = useState('anchor_animated_looped.mp4');
+  const [selectedNotebookId, setSelectedNotebookId] = useState("");
+  const [customPrompt, setCustomPrompt] = useState("Summarize the latest news from this project for a 4-sentence broadcast script.");
+  const [isGenerating, setIsGenerating] = useState(false);
 
-  const API_URL = 'http://127.0.0.1:5005/api';
+  const API_URL = "http://127.0.0.1:5005";
 
   useEffect(() => {
     const interval = setInterval(() => {
-      fetch(`${API_URL}/status`)
+      fetch(`${API_URL}/api/status`)
         .then(res => res.json())
         .then(data => {
           setPipeline(data);
-          if (data.script_text && !scriptInput) {
-             setScriptInput(data.script_text);
+          if (data.script_text && !script) {
+             setScript(data.script_text);
           }
         })
         .catch(err => console.error("Pipeline API Error:", err));
     }, 2000);
     return () => clearInterval(interval);
-  }, []);
+  }, [script]);
 
   const generateScript = async () => {
-    setIsGeneratingScript(true);
+    setIsGenerating(true);
     try {
-      const res = await fetch(`${API_URL}/notebooklm/generate`, {
+      const res = await fetch(`${API_URL}/api/notebooklm/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: promptInput, notebook_id: notebookId })
+        body: JSON.stringify({ prompt: customPrompt, notebook_id: selectedNotebookId })
       });
       const data = await res.json();
-      if (data.text) setScriptInput(data.text);
+      if (data.text) setScript(data.text);
     } catch (e) {
       console.error(e);
     }
-    setIsGeneratingScript(false);
+    setIsGenerating(false);
   };
 
   const saveScript = async () => {
     try {
-      await fetch(`${API_URL}/script`, {
+      await fetch(`${API_URL}/api/script`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: scriptInput })
+        body: JSON.stringify({ text: script })
       });
     } catch (e) {
       console.error(e);
     }
   };
 
-  const startStage = async (stage: string) => {
+  const startStage = async (stageName: string) => {
     await saveScript();
     try {
-      await fetch(`${API_URL}/pipeline/start_stage`, {
+      await fetch(`${API_URL}/api/pipeline/start_stage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stage, project_name: projectName, anchor: anchorFile })
+        body: JSON.stringify({ stage: stageName, project_name: projectName, anchor: selectedAnchor })
       });
     } catch (e) {
       console.error(e);
@@ -84,14 +83,14 @@ export default function NewsroomPipeline() {
 
   const stopPipeline = async () => {
     try {
-      await fetch(`${API_URL}/pipeline/stop`, { method: 'POST' });
+      await fetch(`${API_URL}/api/pipeline/stop`, { method: 'POST' });
     } catch (e) {
       console.error(e);
     }
   };
 
   return (
-    <div className="h-full flex flex-col gap-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+    <div className="h-full flex flex-col gap-6 overflow-y-auto animate-in fade-in slide-in-from-bottom-4 duration-500">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -135,10 +134,12 @@ export default function NewsroomPipeline() {
                   </div>
                   <button 
                     onClick={generateScript}
-                    disabled={isGeneratingScript || pipeline.status === 'running'}
-                    className="p-2 bg-sky-100 text-sky-700 rounded-lg hover:bg-sky-200 disabled:opacity-50"
+                    disabled={isGenerating || pipeline.status === 'running'}
+                    className="w-9 h-9 rounded-full flex items-center justify-center text-white shadow-lg shadow-sky-500/30 hover:scale-110 transition-all disabled:opacity-40 disabled:hover:scale-100 shrink-0"
+                    style={{ background: 'linear-gradient(135deg, #0ea5e9, #38bdf8)' }}
+                    title="Generate Script"
                   >
-                    {isGeneratingScript ? <RefreshCw size={16} className="animate-spin" /> : <Play size={16} />}
+                    {isGenerating ? <RefreshCw size={15} className="animate-spin" /> : <Play size={15} fill="currentColor" />}
                   </button>
                 </div>
                 
@@ -146,26 +147,26 @@ export default function NewsroomPipeline() {
                   <input 
                     type="text"
                     placeholder="Generation Prompt (e.g. Focus on tech trends)..."
-                    value={promptInput}
-                    onChange={(e) => setPromptInput(e.target.value)}
+                    value={customPrompt}
+                    onChange={(e) => setCustomPrompt(e.target.value)}
                     className="w-full px-3 py-1.5 border rounded-lg bg-white/50 text-xs focus:outline-none focus:border-sky-300"
                   />
                   <input 
                     type="text"
                     placeholder="Paste NotebookLM URL or Notebook ID..."
-                    value={notebookId}
+                    value={selectedNotebookId}
                     onChange={(e) => {
                       let val = e.target.value;
                       if (val.includes('/notebook/')) {
                         val = val.split('/notebook/')[1].split('?')[0].split('/')[0];
                       }
-                      setNotebookId(val);
+                      setSelectedNotebookId(val);
                     }}
                     className="w-full px-3 py-1.5 border rounded-lg bg-white/50 text-xs focus:outline-none focus:border-sky-300"
                   />
                   <select 
-                    value={notebookId}
-                    onChange={(e) => setNotebookId(e.target.value)}
+                    value={selectedNotebookId}
+                    onChange={(e) => setSelectedNotebookId(e.target.value)}
                     className="w-full px-2 py-1 border rounded-lg bg-white/50 text-[10px] focus:outline-none focus:border-sky-300"
                   >
                     <option value="" disabled>Quick select saved notebook...</option>
@@ -192,10 +193,15 @@ export default function NewsroomPipeline() {
                     <p className="text-xs readable-copy">Gemini Puck Voice Synthesis</p>
                   </div>
                 </div>
-                <Play size={18} className="text-emerald-500" />
+                <div
+                  className="w-9 h-9 rounded-full flex items-center justify-center text-white shadow-lg shadow-emerald-500/30 shrink-0"
+                  style={{ background: 'linear-gradient(135deg, #059669, #34d399)' }}
+                >
+                  <Play size={15} fill="currentColor" />
+                </div>
               </button>
 
-              {/* Stage 3: Lipsync + Anchor selection */}
+              {/* Stage 3: Animation (LivePortrait or EchoMimic) */}
               <div className="w-full flex flex-col p-4 liquid-surface border rounded-2xl hover:border-purple-300 transition-all">
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-3">
@@ -203,21 +209,34 @@ export default function NewsroomPipeline() {
                       <Video size={20} />
                     </div>
                     <div className="text-left">
-                      <p className="font-bold text-sm">3. Animation & Lipsync</p>
-                      <p className="text-[10px] readable-copy">MuseTalk & LivePortrait</p>
+                      <p className="font-bold text-sm">3. Animation (Mimicry)</p>
+                      <p className="text-[10px] readable-copy">LivePortrait or EchoMimic v2</p>
                     </div>
                   </div>
-                  <button 
-                    onClick={() => startStage('lipsync')}
-                    disabled={pipeline.status === 'running'}
-                    className="p-2 bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200 disabled:opacity-50"
-                  >
-                    <Play size={16} />
-                  </button>
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={() => startStage('liveportrait')}
+                      disabled={pipeline.status === 'running'}
+                      className="w-9 h-9 rounded-full flex items-center justify-center text-white shadow-lg shadow-purple-500/30 hover:scale-110 transition-all disabled:opacity-40 disabled:hover:scale-100 shrink-0"
+                      style={{ background: 'linear-gradient(135deg, #7c3aed, #a78bfa)' }}
+                      title="Run LivePortrait"
+                    >
+                      <Play size={15} fill="currentColor" />
+                    </button>
+                    <button 
+                      onClick={() => startStage('echomimic')}
+                      disabled={pipeline.status === 'running'}
+                      className="w-9 h-9 rounded-full flex items-center justify-center text-white shadow-lg shadow-indigo-500/30 hover:scale-110 transition-all disabled:opacity-40 disabled:hover:scale-100 shrink-0"
+                      style={{ background: 'linear-gradient(135deg, #4f46e5, #818cf8)' }}
+                      title="Run EchoMimic v2"
+                    >
+                      <Play size={15} fill="currentColor" />
+                    </button>
+                  </div>
                 </div>
                 <select 
-                  value={anchorFile}
-                  onChange={(e) => setAnchorFile(e.target.value)}
+                  value={selectedAnchor}
+                  onChange={(e) => setSelectedAnchor(e.target.value)}
                   className="w-full px-2 py-1.5 border rounded-lg bg-white/50 text-xs focus:outline-none focus:border-purple-300"
                 >
                   <option value="anchor_animated_looped.mp4">Anchor 1 (Looped)</option>
@@ -226,7 +245,30 @@ export default function NewsroomPipeline() {
                 </select>
               </div>
 
-              {/* Stage 4: Assembly + Project name */}
+              {/* Stage 4: Lipsync */}
+              <button 
+                onClick={() => startStage('lipsync')}
+                disabled={pipeline.status === 'running'}
+                className="w-full flex items-center justify-between p-4 liquid-surface border rounded-2xl hover:border-pink-300 transition-all disabled:opacity-50"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl liquid-pill text-pink-600 flex items-center justify-center">
+                    <Mic size={20} />
+                  </div>
+                  <div className="text-left">
+                    <p className="font-bold text-sm">4. Lip-Syncing</p>
+                    <p className="text-xs readable-copy">MuseTalk Audio-to-Video</p>
+                  </div>
+                </div>
+                <div
+                  className="w-9 h-9 rounded-full flex items-center justify-center text-white shadow-lg shadow-pink-500/30 shrink-0"
+                  style={{ background: 'linear-gradient(135deg, #db2777, #f472b6)' }}
+                >
+                  <Play size={15} fill="currentColor" />
+                </div>
+              </button>
+
+              {/* Stage 5: Assembly */}
               <div className="w-full flex flex-col p-4 liquid-surface border rounded-2xl hover:border-amber-300 transition-all">
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-3">
@@ -234,16 +276,18 @@ export default function NewsroomPipeline() {
                       <Video size={20} />
                     </div>
                     <div className="text-left">
-                      <p className="font-bold text-sm">4. Premium Assembly</p>
+                      <p className="font-bold text-sm">5. Premium Assembly</p>
                       <p className="text-[10px] readable-copy">Composite to Final MP4</p>
                     </div>
                   </div>
                   <button 
                     onClick={() => startStage('assembly')}
                     disabled={pipeline.status === 'running'}
-                    className="p-2 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200 disabled:opacity-50"
+                    className="w-9 h-9 rounded-full flex items-center justify-center text-white shadow-lg shadow-amber-500/30 hover:scale-110 transition-all disabled:opacity-40 disabled:hover:scale-100 shrink-0"
+                    style={{ background: 'linear-gradient(135deg, #d97706, #fbbf24)' }}
+                    title="Start Assembly"
                   >
-                    <Play size={16} />
+                    <Play size={15} fill="currentColor" />
                   </button>
                 </div>
                 <input 
@@ -270,14 +314,15 @@ export default function NewsroomPipeline() {
                </button>
              </div>
              <textarea 
-               value={scriptInput}
-               onChange={(e) => setScriptInput(e.target.value)}
+               value={script}
+               onChange={(e) => setScript(e.target.value)}
                placeholder="Enter or generate script here..."
                className="flex-1 w-full p-4 rounded-2xl border border-sky-100 bg-white/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-200 resize-none font-medium text-sm readable-copy"
              />
           </div>
 
-          <div className="liquid-surface-strong p-6 rounded-3xl border shadow-sm flex flex-col h-[250px] shrink-0">
+           <div className="liquid-surface-strong p-6 rounded-3xl border shadow-sm flex flex-col min-h-[200px]"
+              style={{ maxHeight: '250px' }}>
              <h3 className="font-bold text-lg liquid-title mb-4 flex items-center gap-2">
                <AlertCircle size={20} className="text-sky-500" /> Terminal Output
              </h3>
@@ -290,7 +335,7 @@ export default function NewsroomPipeline() {
                   ))
                 )}
              </div>
-          </div>
+           </div>
 
         </div>
 

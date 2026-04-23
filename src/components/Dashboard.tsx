@@ -4,7 +4,8 @@ import {
   MousePointer2, 
   Eye, 
   Activity,
-  AlertTriangle
+  AlertTriangle,
+  Globe
 } from 'lucide-react';
 import { 
   AreaChart, 
@@ -43,33 +44,34 @@ export default function Dashboard() {
     load();
   }, []);
 
+  const trends = (stats as any)?.trends || {};
   const cards = [
     {
       label: 'Total Clicks',
-      value: stats?.clicks?.toLocaleString() || '...',
+      value: stats?.clicks?.toLocaleString() || '0',
       icon: MousePointer2,
-      trend: '+12%',
+      trend: trends.clicks || (stats ? '—' : '--'),
       iconClass: 'liquid-pill text-sky-700',
     },
     {
       label: 'Impressions',
-      value: stats?.impressions?.toLocaleString() || '...',
+      value: stats?.impressions?.toLocaleString() || '0',
       icon: Eye,
-      trend: '+5.4%',
+      trend: trends.impressions || (stats ? '—' : '--'),
       iconClass: 'liquid-pill text-indigo-700',
     },
     {
       label: 'Avg. Position',
-      value: stats ? stats.avgPosition : '...',
+      value: stats ? stats.avgPosition : '0',
       icon: TrendingUp,
-      trend: '-0.2',
+      trend: trends.avgPosition || (stats ? '—' : '--'),
       iconClass: 'liquid-pill text-emerald-700',
     },
     {
       label: 'CTR',
-      value: stats ? `${stats.ctr}%` : '...',
+      value: stats ? `${stats.ctr}%` : '0%',
       icon: Activity,
-      trend: '+0.1%',
+      trend: trends.ctr || (stats ? '—' : '--'),
       iconClass: 'liquid-pill text-amber-700',
     },
   ];
@@ -82,8 +84,9 @@ export default function Dashboard() {
       </header>
 
       {error && (
-        <div className="liquid-surface border text-red-700 text-sm p-4 rounded-xl">
-          Failed to load dashboard data: {error}
+        <div className="liquid-surface border text-amber-700 text-sm p-4 rounded-xl flex items-center gap-2">
+          <AlertTriangle size={16} className="shrink-0" />
+          <span>Could not reach data endpoints. Configure your WordPress site and VPS in <strong>Settings</strong>.</span>
         </div>
       )}
 
@@ -103,7 +106,9 @@ export default function Dashboard() {
                 <card.icon size={20} />
               </div>
               <span className={`text-xs font-bold px-2 py-1 rounded-full ${
-                card.trend.startsWith('+') ? 'liquid-pill text-emerald-600' : 'liquid-pill text-rose-600'
+                card.trend.startsWith('+') ? 'liquid-pill text-emerald-600' :
+                card.trend.startsWith('-') ? 'liquid-pill text-rose-600' :
+                'liquid-pill liquid-soft'
               }`}>
                 {card.trend}
               </span>
@@ -195,8 +200,4 @@ export default function Dashboard() {
       </div>
     </div>
   );
-}
-
-function Globe({ size, className }: { size: number, className?: string }) {
-  return <Activity size={size} className={className} />;
 }

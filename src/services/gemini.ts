@@ -49,6 +49,7 @@ export const getAgentResponse = async (
   context?: string,
   parts: AgentPart[] = [],
   research?: AgentResearchOptions,
+  signal?: AbortSignal,
 ): Promise<AgentResponse> => {
   try {
     const response = await fetch("/api/agent", {
@@ -56,6 +57,7 @@ export const getAgentResponse = async (
       headers: {
         "Content-Type": "application/json",
       },
+      signal,
       body: JSON.stringify({
         prompt,
         context,

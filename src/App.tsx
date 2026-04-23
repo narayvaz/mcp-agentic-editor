@@ -16,95 +16,9 @@ import NewsroomPipeline from './components/NewsroomPipeline';
 import NewsroomHistory from './components/NewsroomHistory';
 import AzatHandbook from './components/AzatHandbook';
 import CodeWorkshop from './components/CodeWorkshop';
+import WordPressHealthDashboard from './components/WordPressHealthDashboard';
 import { Menu, Search, Globe, Bot, Monitor } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-
-const WordPressHealthMonitor = () => {
-  const [healthData, setHealthData] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const fetchMetrics = async () => {
-      try {
-        // Simulated API call to fetch WordPress health metrics
-        await new Promise(resolve => setTimeout(resolve, 1200));
-        setHealthData({
-          site: 'mcp-news.com',
-          objectCache: 'Enabled',
-          maxQueryTime: 0.034,
-          activePlugins: 7,
-          status: 'Healthy'
-        });
-      } catch (error) {
-        console.error('Failed to fetch WP health:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchMetrics();
-  }, []);
-
-  if (loading) {
-    return (
-      <div className="liquid-surface-strong flex flex-col items-center justify-center h-full text-center p-12 rounded-3xl border">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-emerald-400 mb-4"></div>
-        <p className="readable-copy">Analyzing WordPress Health (Rule 3)...</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="liquid-surface-strong p-6 lg:p-10 rounded-3xl border h-full overflow-y-auto">
-      <div className="flex items-center gap-4 mb-8">
-        <div className="p-3 bg-emerald-500/10 rounded-2xl">
-          <Globe size={32} className="text-emerald-400" />
-        </div>
-        <div>
-          <h2 className="text-2xl font-bold liquid-title">WordPress Health Monitor</h2>
-          <p className="text-sm liquid-soft">Real-time compliance check for {healthData.site}</p>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-        <div className="p-6 rounded-2xl bg-white/5 border border-white/10">
-          <h3 className="text-sm font-bold uppercase tracking-widest text-emerald-300 mb-4">Performance Metrics</h3>
-          <div className="space-y-4">
-            <div className="flex justify-between">
-              <span className="opacity-60">Object Cache</span>
-              <span className="font-mono text-emerald-400">{healthData.objectCache}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="opacity-60">Slowest Query</span>
-              <span className="font-mono text-emerald-400">{healthData.maxQueryTime}s</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="p-6 rounded-2xl bg-white/5 border border-white/10">
-          <h3 className="text-sm font-bold uppercase tracking-widest text-sky-300 mb-4">Site Configuration</h3>
-          <div className="space-y-4">
-            <div className="flex justify-between">
-              <span className="opacity-60">Active Plugins</span>
-              <span className="font-mono">{healthData.activePlugins}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="opacity-60">Health Status</span>
-              <span className="text-emerald-400 font-bold">{healthData.status}</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="p-4 rounded-xl bg-emerald-500/5 border border-emerald-500/20">
-        <p className="text-xs text-emerald-300/80 leading-relaxed">
-          <strong>Rule 3 Compliance:</strong> Object Cache is active via LiteSpeed. 
-          All database queries are performing under the 0.5s limit. 
-          Plugin count is within essential limits.
-        </p>
-      </div>
-    </div>
-  );
-};
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -126,7 +40,7 @@ export default function App() {
           </div>
         );
       case 'wordpress':
-        return <WordPressHealthMonitor />;
+        return <WordPressHealthDashboard />;
       case 'tools':
         return <ToolGenerator />;
       case 'automations':

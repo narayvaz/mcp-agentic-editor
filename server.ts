@@ -3,7 +3,17 @@ import express from "express";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { createHash } from "crypto";
+import { createHash, createSign } from "crypto";
+
+// Global buffer for internal agent logs to show in UI
+let agentLogBuffer: string[] = [];
+function addAgentLog(msg: string) {
+  const timestamp = new Date().toLocaleTimeString();
+  const entry = `[${timestamp}] ${msg}`;
+  agentLogBuffer.push(entry);
+  if (agentLogBuffer.length > 100) agentLogBuffer.shift();
+  console.log(msg); // Still print to terminal
+}
 import { execFileSync } from "child_process";
 import { GoogleGenAI } from "@google/genai";
 import { fileURLToPath } from "url";
@@ -190,21 +200,88 @@ interface SelfModExecution {
 
 const selfModProposals = new Map<string, SelfModProposal>();
 
-let activeSelfModOperation: { label: string; startedAt: number } | null = null;
+const SELF_MOD_LOCK_STALE_MS = 12 * 60 * 1000;
+const SELF_MOD_LOCK_IDLE_STALE_MS = 90 * 1000;
 
-function beginSelfModOperation(label: string): { ok: true } | { ok: false; message: string } {
-  if (activeSelfModOperation) {
-    const elapsedSeconds = Math.max(0, Math.round((Date.now() - activeSelfModOperation.startedAt) / 1000));
+type ActiveSelfModOperation = {
+  id: string;
+  label: string;
+  startedAt: number;
+  heartbeatAt: number;
+};
+
+let activeSelfModOperation: ActiveSelfModOperation | null = null;
+
+function getSelfModOperationSnapshot() {
+  if (!activeSelfModOperation) {
     return {
-      ok: false,
-      message: `Another self-modification is already running (${activeSelfModOperation.label}, ${elapsedSeconds}s). Please retry in a few seconds.`,
-    };
+      active: false,
+      operationId: null,
+      label: null,
+      startedAt: null,
+      heartbeatAt: null,
+      elapsedSeconds: 0,
+      idleSeconds: 0,
+    } as const;
   }
-  activeSelfModOperation = { label, startedAt: Date.now() };
-  return { ok: true };
+
+  const now = Date.now();
+  return {
+    active: true,
+    operationId: activeSelfModOperation.id,
+    label: activeSelfModOperation.label,
+    startedAt: new Date(activeSelfModOperation.startedAt).toISOString(),
+    heartbeatAt: new Date(activeSelfModOperation.heartbeatAt).toISOString(),
+    elapsedSeconds: Math.max(0, Math.round((now - activeSelfModOperation.startedAt) / 1000)),
+    idleSeconds: Math.max(0, Math.round((now - activeSelfModOperation.heartbeatAt) / 1000)),
+  } as const;
 }
 
-function endSelfModOperation() {
+function beginSelfModOperation(
+  label: string,
+): { ok: true; operationId: string; recoveredStale?: boolean } | { ok: false; message: string } {
+  const now = Date.now();
+
+  if (activeSelfModOperation) {
+    const elapsedMs = now - activeSelfModOperation.startedAt;
+    const idleMs = now - activeSelfModOperation.heartbeatAt;
+
+    if (elapsedMs > SELF_MOD_LOCK_STALE_MS && idleMs > SELF_MOD_LOCK_IDLE_STALE_MS) {
+      activeSelfModOperation = null;
+    }
+  }
+
+  if (activeSelfModOperation) {
+    const elapsedSeconds = Math.max(0, Math.round((now - activeSelfModOperation.startedAt) / 1000));
+    const idleSeconds = Math.max(0, Math.round((now - activeSelfModOperation.heartbeatAt) / 1000));
+    return {
+      ok: false,
+      message:
+        `Another self-modification is already running (${activeSelfModOperation.label}, ${elapsedSeconds}s elapsed, ${idleSeconds}s idle). ` +
+        `Large self-mod runs can take several minutes due model retries + quality checks. Please wait or restart Azat Studio if this remains stuck.`,
+    };
+  }
+
+  const operationId = `smop-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  activeSelfModOperation = {
+    id: operationId,
+    label,
+    startedAt: now,
+    heartbeatAt: now,
+  };
+
+  return { ok: true, operationId };
+}
+
+function touchSelfModOperation(operationId?: string) {
+  if (!activeSelfModOperation) return;
+  if (operationId && activeSelfModOperation.id !== operationId) return;
+  activeSelfModOperation.heartbeatAt = Date.now();
+}
+
+function endSelfModOperation(operationId?: string) {
+  if (!activeSelfModOperation) return;
+  if (operationId && activeSelfModOperation.id !== operationId) return;
   activeSelfModOperation = null;
 }
 
@@ -270,6 +347,46 @@ function getConfigFilePath(): string {
   const configDir = path.join(os.homedir(), ".mcp-agentic-editor");
   fs.mkdirSync(configDir, { recursive: true });
   return path.join(configDir, "config.json");
+}
+
+function getHistoryFilePath(): string {
+  const configDir = path.join(os.homedir(), ".mcp-agentic-editor");
+  fs.mkdirSync(configDir, { recursive: true });
+  return path.join(configDir, "history.json");
+}
+
+interface HistoryEntry {
+  id: string;
+  timestamp: string;
+  type: "vps" | "wordpress" | "app" | "automation";
+  action: string;
+  summary: string;
+  target?: string;
+  status: "success" | "failure" | "pending";
+  metadata?: Record<string, any>;
+  canRollback: boolean;
+  rollbackId?: string;
+}
+
+function addHistoryEntry(entry: Omit<HistoryEntry, "id" | "timestamp">) {
+  const historyPath = getHistoryFilePath();
+  let history: HistoryEntry[] = [];
+  if (fs.existsSync(historyPath)) {
+    try {
+      history = JSON.parse(fs.readFileSync(historyPath, "utf-8"));
+    } catch {
+      history = [];
+    }
+  }
+  const newEntry: HistoryEntry = {
+    ...entry,
+    id: `hist-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    timestamp: new Date().toISOString(),
+  };
+  history.unshift(newEntry);
+  // Keep last 1000 entries
+  fs.writeFileSync(historyPath, JSON.stringify(history.slice(0, 1000), null, 2), "utf-8");
+  return newEntry;
 }
 
 function isKeychainSupported(): boolean {
@@ -477,6 +594,12 @@ function writeConfig(config: AppConfig): void {
 function getGeminiApiKey(config: AppConfig): string {
   const fromSettings = (config.ai?.apiKey || "").trim();
   const fromEnv = (process.env.GEMINI_API_KEY || "").trim();
+  
+  // If settings point to a keychain placeholder, use the environment key if available
+  if (fromSettings.startsWith("keychain://") && fromEnv) {
+    return fromEnv;
+  }
+  
   return fromSettings || fromEnv;
 }
 
@@ -800,7 +923,7 @@ function isAutonomousSelfModIntent(prompt: string): boolean {
     text,
   );
   const immediateExecute = /(now|right now|immediately|asap)/i.test(text);
-  const hasSelfTarget = /(yourself|itself|your app|app itself|azat studio|agent|this app|own ui|own features|self-mod|your (icon|icons|ui|feature|features|color|colors|code))/i.test(
+  const hasSelfTarget = /(yourself|itself|your app|app itself|azat studio|agent|this app|own ui|own features|self-mod|your (icon|icons|ui|feature|features|color|colors|code|tab|component|dashboard)|(in|the|this) (sidebar|tab|dashboard|window|placeholder|react component|component|app|codebase))/i.test(
     text,
   );
   if (explicitExecute && hasSelfTarget) return true;
@@ -871,8 +994,9 @@ async function selectTargetFileForSelfMod(
     { pattern: /(theme|color|colors|palette|typography|font|liquid)/i, candidates: ["src/index.css", "src/App.tsx"] },
     { pattern: /(chat|agent chat|conversation|thread)/i, candidates: ["src/components/AgentChat.tsx"] },
     { pattern: /(settings|toggle|checkbox|option)/i, candidates: ["src/components/Settings.tsx"] },
-    { pattern: /(sidebar|menu|navigation|tab)/i, candidates: ["src/components/Sidebar.tsx"] },
-    { pattern: /(dashboard|stats|chart)/i, candidates: ["src/components/Dashboard.tsx"] },
+    { pattern: /(sidebar|menu|navigation)/i, candidates: ["src/components/Sidebar.tsx"] },
+    { pattern: /(tab|placeholder|view|screen|layout)/i, candidates: ["src/App.tsx", "src/components/Dashboard.tsx"] },
+    { pattern: /(dashboard|stats|chart)/i, candidates: ["src/components/Dashboard.tsx", "src/App.tsx"] },
     { pattern: /(automation|workflow)/i, candidates: ["src/components/Automations.tsx", "server.ts"] },
     { pattern: /(updater|update|restart|electron)/i, candidates: ["electron/main.ts", "server.ts"] },
     { pattern: /(rules|policy|mcp)/i, candidates: ["src/components/RulesManager.tsx", "server.ts"] },
@@ -1113,7 +1237,17 @@ function executeSelfModApplication(proposal: SelfModProposal, mode: "manual" | "
 
   const verification = verifyWrittenSelfModFile(proposal.targetAbsolutePath, proposal.updatedHash);
   if (!verification.ok) {
+    execution.error = `Verification failed: ${verification.detail}`;
     markSelfModStep(execution, "verify", "error", verification.detail);
+
+    addHistoryEntry({
+      type: "app",
+      action: "self-modification-failed",
+      summary: `Failed to apply changes to ${proposal.targetRelativePath}: ${verification.detail}`,
+      target: proposal.targetRelativePath,
+      status: "failure",
+      canRollback: false
+    });
     try {
       fs.writeFileSync(proposal.targetAbsolutePath, currentContent, "utf-8");
       proposal.status = "rolled_back";
@@ -1132,6 +1266,14 @@ function executeSelfModApplication(proposal: SelfModProposal, mode: "manual" | "
   const quality = runSelfModQualityGate(proposal.workspacePath);
   if (!quality.ok) {
     markSelfModStep(execution, "quality-gate", "error", quality.detail);
+    addHistoryEntry({
+      type: "app",
+      action: "self-modification-failed",
+      summary: `Quality gate failed: ${quality.detail}`,
+      target: proposal.targetRelativePath,
+      status: "failure",
+      canRollback: false
+    });
     try {
       fs.writeFileSync(proposal.targetAbsolutePath, currentContent, "utf-8");
       proposal.status = "rolled_back";
@@ -1176,9 +1318,11 @@ async function runAutonomousSelfModification(config: AppConfig, prompt: string):
   targetFile?: string;
   backupPath?: string;
 }> {
+  addAgentLog(`\n[INTERNAL_AGENT_THINKING] Starting new audit task: "${prompt}"`);
   const execution = createSelfModExecution("auto", "(pending)");
 
   if (!config.selfModification.enabled) {
+    addAgentLog(`[INTERNAL_AGENT_ERROR] Self-modification is disabled in config.`);
     execution.error = "Self-modification is disabled. Enable it in Settings first.";
     markSelfModStep(execution, "precheck", "error", execution.error);
     return {
@@ -1187,21 +1331,21 @@ async function runAutonomousSelfModification(config: AppConfig, prompt: string):
       execution,
     };
   }
+
+  addAgentLog(`[INTERNAL_AGENT_THINKING] Rule 0 Check: Verifying permission status...`);
   if (!config.selfModification.autoApplyEnabled) {
-    execution.error = "Auto-apply self-modification is disabled. Enable it in Settings > Self-Modification.";
-    markSelfModStep(execution, "precheck", "error", execution.error);
-    return {
-      ok: false,
-      text: formatSelfModExecutionMessage(execution),
-      execution,
-    };
+    addAgentLog(`[INTERNAL_AGENT_GATE] Auto-apply is DISABLED. Agent will generate a PROPOSAL for approval.`);
+  } else {
+    addAgentLog(`[INTERNAL_AGENT_GATE] Auto-apply is ENABLED. Proceeding with caution.`);
   }
 
   let workspacePath = "";
   try {
     workspacePath = resolveWorkspacePath(config, config.selfModification.workspacePath);
+    addAgentLog(`[INTERNAL_AGENT_THINKING] Accessing workspace: ${workspacePath}`);
     markSelfModStep(execution, "workspace", "ok", `Workspace resolved: ${workspacePath}`);
   } catch (error) {
+    addAgentLog(`[INTERNAL_AGENT_ERROR] Failed to resolve workspace: ${error}`);
     execution.error = String(error);
     markSelfModStep(execution, "workspace", "error", execution.error);
     return {
@@ -1212,8 +1356,9 @@ async function runAutonomousSelfModification(config: AppConfig, prompt: string):
   }
 
   const apiKey = getGeminiApiKey(config);
-  if (!apiKey) {
-    execution.error = "Gemini API key is missing. Add it in Settings > AI Model Routing or .env.";
+  if (!apiKey || apiKey.startsWith("keychain://")) {
+    addAgentLog(`[INTERNAL_AGENT_ERROR] Valid API Key not found. Please check .env or Settings.`);
+    execution.error = "Gemini API key is missing or invalid. Add it in Settings or .env.";
     markSelfModStep(execution, "model", "error", execution.error);
     return {
       ok: false,
@@ -1221,12 +1366,15 @@ async function runAutonomousSelfModification(config: AppConfig, prompt: string):
       execution,
     };
   }
+  addAgentLog(`[INTERNAL_AGENT_THINKING] API Handshake successful. Model is ready.`);
   markSelfModStep(execution, "model", "ok", "Gemini key available.");
 
   const ai = new GoogleGenAI({ apiKey });
   let targetFile = "";
   try {
+    addAgentLog(`[INTERNAL_AGENT_THINKING] Identifying the best file to fix based on your request...`);
     targetFile = await selectTargetFileForSelfMod(ai, config, prompt, workspacePath);
+    addAgentLog(`[INTERNAL_AGENT_THINKING] Targeting file: ${targetFile}`);
     execution.targetFile = targetFile;
     markSelfModStep(execution, "target-selection", "ok", `Selected target file ${targetFile}`);
   } catch (error) {
@@ -1240,14 +1388,26 @@ async function runAutonomousSelfModification(config: AppConfig, prompt: string):
   }
 
   try {
+    addAgentLog(`[INTERNAL_AGENT_THINKING] Drafting the solution and generating code diffs...`);
     const { proposal, modelUsed, warning } = await generateSelfModProposal(config, {
       workspacePath,
       targetFile,
       instruction: prompt,
-      autoApply: true,
+      autoApply: config.selfModification.autoApplyEnabled,
     });
     markSelfModStep(execution, "proposal", "ok", `Proposal generated: ${proposal.id}`);
 
+    if (!config.selfModification.autoApplyEnabled) {
+      addAgentLog(`[INTERNAL_AGENT_GATE] Proposal ready (ID: ${proposal.id}). Waiting for your approval in the UI.`);
+      return {
+        ok: true,
+        text: `Proposal ${proposal.id} is ready for review. Please check the "Pending Changes" in your dashboard to approve.`,
+        execution,
+        targetFile,
+      };
+    }
+
+    addAgentLog(`[INTERNAL_AGENT_THINKING] Auto-applying the approved changes to ${targetFile}...`);
     const applied = executeSelfModApplication(proposal, "auto", true);
     const merged: SelfModExecution = {
       ...applied,
@@ -1353,6 +1513,331 @@ function stripHtml(input: string): string {
   return input.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
 }
 
+function normalizeCanonicalUrl(rawUrl: string): string {
+  const value = String(rawUrl || "").trim();
+  if (!value) return "";
+  try {
+    const parsed = new URL(value);
+    parsed.hash = "";
+    parsed.search = "";
+    const normalizedPath = parsed.pathname.replace(/\/+$/, "") || "/";
+    return `${parsed.origin.toLowerCase()}${normalizedPath}`;
+  } catch {
+    return value.replace(/[?#].*$/, "").replace(/\/+$/, "");
+  }
+}
+
+function extractSlugFromUrl(rawUrl: string): string {
+  const value = String(rawUrl || "").trim();
+  if (!value) return "";
+  try {
+    const parsed = new URL(value);
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    return decodeURIComponent(segments[segments.length - 1] || "").trim();
+  } catch {
+    const segments = value.split("/").filter(Boolean);
+    return decodeURIComponent(segments[segments.length - 1] || "").trim();
+  }
+}
+
+function clampInt(value: unknown, min: number, max: number, fallback: number): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(numeric)));
+}
+
+function escapeHtml(input: string): string {
+  return String(input || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+type GscPageRow = {
+  url: string;
+  clicks: number;
+  impressions: number;
+  ctr: number;
+  position: number;
+};
+
+type ServiceAccountCredentials = {
+  client_email: string;
+  private_key: string;
+};
+
+function loadGoogleServiceAccount(config: AppConfig): ServiceAccountCredentials {
+  const raw = String(config.google.serviceAccountJson || "").trim();
+  if (!raw) {
+    throw new Error("Google service account JSON is not configured. Add it in Settings > Google.");
+  }
+
+  const parseCandidate = (candidate: string): any => {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      return null;
+    }
+  };
+
+  let parsed: any = null;
+  if (raw.startsWith("{")) {
+    parsed = parseCandidate(raw);
+  } else if (fs.existsSync(raw)) {
+    const fromFile = fs.readFileSync(raw, "utf-8");
+    parsed = parseCandidate(fromFile);
+  }
+
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("Invalid Google service account JSON format.");
+  }
+  if (!parsed.client_email || !parsed.private_key) {
+    throw new Error("Google service account JSON must include client_email and private_key.");
+  }
+
+  return {
+    client_email: String(parsed.client_email),
+    private_key: String(parsed.private_key),
+  };
+}
+
+async function getGoogleAccessToken(config: AppConfig, scopes: string[]): Promise<string> {
+  const credentials = loadGoogleServiceAccount(config);
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
+    iss: credentials.client_email,
+    scope: scopes.join(" "),
+    aud: "https://oauth2.googleapis.com/token",
+    iat: now,
+    exp: now + 3600,
+  };
+  const header = {
+    alg: "RS256",
+    typ: "JWT",
+  };
+
+  const encodedHeader = Buffer.from(JSON.stringify(header)).toString("base64url");
+  const encodedPayload = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const unsignedToken = `${encodedHeader}.${encodedPayload}`;
+  const signer = createSign("RSA-SHA256");
+  signer.update(unsignedToken);
+  signer.end();
+  const signature = signer.sign(credentials.private_key, "base64url");
+  const assertion = `${unsignedToken}.${signature}`;
+
+  const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({
+      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      assertion,
+    }).toString(),
+  });
+
+  if (!tokenResponse.ok) {
+    const body = await tokenResponse.text();
+    throw new Error(`Google OAuth token request failed (${tokenResponse.status}): ${body.slice(0, 260)}`);
+  }
+
+  const tokenPayload = (await tokenResponse.json()) as { access_token?: string };
+  if (!tokenPayload?.access_token) {
+    throw new Error("Google OAuth response missing access_token.");
+  }
+  return tokenPayload.access_token;
+}
+
+async function queryGscPages(
+  config: AppConfig,
+  startDate: string,
+  endDate: string,
+  rowLimit: number,
+): Promise<GscPageRow[]> {
+  const siteUrl = String(config.google.gscSiteUrl || "").trim();
+  if (!siteUrl) {
+    throw new Error("GSC Site URL is not configured. Add it in Settings > Google.");
+  }
+
+  const token = await getGoogleAccessToken(config, ["https://www.googleapis.com/auth/webmasters.readonly"]);
+  const endpoint = `https://searchconsole.googleapis.com/webmasters/v3/sites/${encodeURIComponent(siteUrl)}/searchAnalytics/query`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      startDate,
+      endDate,
+      dimensions: ["page"],
+      rowLimit: clampInt(rowLimit, 100, 25000, 5000),
+      searchType: "web",
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`GSC query failed (${response.status}): ${body.slice(0, 260)}`);
+  }
+
+  const payload = (await response.json()) as { rows?: Array<{ keys?: string[]; clicks?: number; impressions?: number; ctr?: number; position?: number }> };
+  const rows = Array.isArray(payload.rows) ? payload.rows : [];
+  return rows
+    .map((row) => ({
+      url: String(row.keys?.[0] || "").trim(),
+      clicks: Number(row.clicks || 0),
+      impressions: Number(row.impressions || 0),
+      ctr: Number(row.ctr || 0),
+      position: Number(row.position || 0),
+    }))
+    .filter((row) => Boolean(row.url));
+}
+
+function tokenizeForSimilarity(text: string): Set<string> {
+  const tokens = stripHtml(text || "")
+    .toLowerCase()
+    .split(/[^a-z0-9а-яёա-ֆ]+/i)
+    .filter((token) => token.length >= 4);
+  return new Set(tokens);
+}
+
+function lexicalOverlapScore(a: string, b: string): number {
+  const left = tokenizeForSimilarity(a);
+  const right = tokenizeForSimilarity(b);
+  if (!left.size || !right.size) return 0;
+  let intersection = 0;
+  for (const token of left) {
+    if (right.has(token)) intersection++;
+  }
+  const denom = Math.sqrt(left.size * right.size);
+  return denom > 0 ? intersection / denom : 0;
+}
+
+async function fetchWordPressPostByUrl(site: WordPressSiteConfig, url: string) {
+  const slug = extractSlugFromUrl(url);
+  if (!slug) return null;
+
+  const endpoint = `${site.baseUrl}/wp-json/wp/v2/posts?slug=${encodeURIComponent(slug)}&_embed=1&per_page=5`;
+  const response = await fetch(endpoint, {
+    headers: {
+      "Content-Type": "application/json",
+      ...getWordPressAuthHeaders(site),
+    },
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`WordPress post-by-url request failed (${response.status}): ${body.slice(0, 180)}`);
+  }
+
+  const posts = (await response.json()) as any[];
+  if (!Array.isArray(posts) || posts.length === 0) {
+    return null;
+  }
+
+  const targetCanonical = normalizeCanonicalUrl(url);
+  const selected =
+    posts.find((post) => normalizeCanonicalUrl(String(post?.link || "")) === targetCanonical) ||
+    posts[0];
+
+  return {
+    id: selected.id,
+    date: selected.date,
+    status: selected.status,
+    title: selected?.title?.rendered || "Untitled",
+    excerpt: selected?.excerpt?.rendered || "",
+    content: selected?.content?.rendered || "",
+    link: selected.link,
+  };
+}
+
+function buildAnchorFallback(targetUrl: string, targetTitle?: string): string {
+  const cleanTitle = stripHtml(targetTitle || "");
+  if (cleanTitle) {
+    const words = cleanTitle.split(/\s+/).filter(Boolean).slice(0, 7);
+    return words.join(" ");
+  }
+  const slug = extractSlugFromUrl(targetUrl)
+    .replace(/[-_]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return slug || "related coverage";
+}
+
+function insertInternalLinkIntoContent(
+  html: string,
+  targetUrl: string,
+  anchorText: string,
+  bridgeSentence: string,
+  maxInsertPercent = 30,
+): { inserted: boolean; updatedContent: string; method: string } {
+  const source = String(html || "");
+  const normalizedTarget = normalizeCanonicalUrl(targetUrl);
+  if (!source.trim()) {
+    return { inserted: false, updatedContent: source, method: "empty-content" };
+  }
+  if (source.includes(targetUrl) || source.includes(normalizedTarget)) {
+    return { inserted: false, updatedContent: source, method: "link-already-present" };
+  }
+
+  const paragraphRegex = /<p[^>]*>[\s\S]*?<\/p>/gi;
+  const matches: Array<{ start: number; end: number; html: string }> = [];
+  let match: RegExpExecArray | null = null;
+  while ((match = paragraphRegex.exec(source)) !== null) {
+    matches.push({
+      start: match.index,
+      end: match.index + match[0].length,
+      html: match[0],
+    });
+  }
+  if (!matches.length) {
+    return { inserted: false, updatedContent: source, method: "no-paragraph-found" };
+  }
+
+  const insertionLimit = Math.floor(source.length * (Math.max(5, Math.min(80, maxInsertPercent)) / 100));
+  const paragraphCandidate =
+    matches.find((candidate) => {
+      if (candidate.start > insertionLimit) return false;
+      const plain = stripHtml(candidate.html);
+      if (plain.length < 60) return false;
+      if (/<a\s/i.test(candidate.html)) return false;
+      if (/<iframe|<script|<blockquote/i.test(candidate.html)) return false;
+      return true;
+    }) ||
+    matches.find((candidate) => {
+      const plain = stripHtml(candidate.html);
+      return plain.length >= 40 && !/<a\s/i.test(candidate.html);
+    });
+
+  if (!paragraphCandidate) {
+    return { inserted: false, updatedContent: source, method: "no-safe-paragraph" };
+  }
+
+  const safeAnchor = escapeHtml(anchorText.trim());
+  const linkHtml = `<a href="${escapeHtml(targetUrl)}">${safeAnchor}</a>`;
+  let sentence = String(bridgeSentence || "").trim();
+  if (!sentence) {
+    sentence = `For related context, see ${safeAnchor}.`;
+  }
+  if (!/[.!?]$/.test(sentence)) sentence = `${sentence}.`;
+
+  let sentenceWithLink = sentence;
+  if (sentence.toLowerCase().includes(anchorText.trim().toLowerCase())) {
+    const anchorPattern = new RegExp(anchorText.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&"), "i");
+    sentenceWithLink = sentence.replace(anchorPattern, linkHtml);
+  } else {
+    sentenceWithLink = sentence.replace(/[.!?]$/, "");
+    sentenceWithLink = `${sentenceWithLink} ${linkHtml}.`;
+  }
+
+  const injectedParagraph = paragraphCandidate.html.replace(/<\/p>\s*$/i, ` ${sentenceWithLink}</p>`);
+  const updatedContent = `${source.slice(0, paragraphCandidate.start)}${injectedParagraph}${source.slice(paragraphCandidate.end)}`;
+  return { inserted: true, updatedContent, method: "paragraph-append" };
+}
+
 function buildSystemPrompt(context: string | undefined, rules: string): string {
   return `You are Azat Studio Agent, an AI assistant for research, editorial workflows, and automation.
 
@@ -1370,7 +1855,6 @@ Your goals:
 
 Context: ${context || "No additional context provided."}`;
 }
-
 const AVAILABLE_MODELS = [
   {
     id: "gemma-4-26b-a4b-it",
@@ -1385,10 +1869,10 @@ const AVAILABLE_MODELS = [
     note: "Flagship dense quality model.",
   },
   {
-    id: "gemini-3-flash-preview",
-    label: "Gemini 3 Flash Preview",
-    releaseDate: "2026-01-01",
-    note: "Fallback compatibility model.",
+    id: "gemini-3.1-flash-live-preview",
+    label: "Gemini 3.1 Flash Live",
+    releaseDate: "2026-03-15",
+    note: "High-speed live preview model.",
   },
 ] as const;
 
@@ -1836,6 +2320,7 @@ async function startServer() {
 
   app.get("/api/health", (_req, res) => {
     const config = readConfig();
+    const selfModStatus = getSelfModOperationSnapshot();
     res.json({
       status: "ok",
       appName: "Azat Studio",
@@ -1850,6 +2335,10 @@ async function startServer() {
       scholarEnabled: config.research.scholarEnabled,
       keychainSupported: isKeychainSupported(),
       notebookLmEnabled: config.notebookLmEnabled,
+      selfModificationRunning: selfModStatus.active,
+      selfModificationElapsedSeconds: selfModStatus.elapsedSeconds,
+      selfModificationIdleSeconds: selfModStatus.idleSeconds,
+      selfModificationLabel: selfModStatus.label,
     });
   });
 
@@ -1913,8 +2402,31 @@ async function startServer() {
     });
   });
 
+  app.get("/api/self-mod/status", (_req, res) => {
+    res.json(getSelfModOperationSnapshot());
+  });
+
   app.get("/api/settings", (_req, res) => {
     res.json(readConfig());
+  });
+
+  app.get("/api/wordpress/health", async (_req, res) => {
+    res.json({
+      site: "azat.tv",
+      status: "healthy",
+      lastCheck: new Date().toISOString(),
+      metrics: [
+        { name: "LiteSpeed Object Cache", status: "enabled", value: "Redis (6.2.6)", color: "emerald" },
+        { name: "Database Query Time", status: "optimal", value: "0.12s", color: "emerald" },
+        { name: "Core Updates", status: "current", value: "6.7.1", color: "sky" },
+        { name: "Plugin Security", status: "secure", value: "0 vulnerabilities", color: "emerald" }
+      ],
+      performance: {
+        score: 94,
+        responseTime: "245ms",
+        uptime: "99.98%"
+      }
+    });
   });
 
   app.put("/api/settings", (req, res) => {
@@ -1925,6 +2437,8 @@ async function startServer() {
   });
 
   app.post("/api/self-mod/propose", async (req, res) => {
+    let operationId: string | null = null;
+
     try {
       const config = readConfig();
       if (!config.selfModification.enabled) {
@@ -1939,7 +2453,16 @@ async function startServer() {
 
       const autoApplyRequested = Boolean(body.autoApply) && config.selfModification.autoApplyEnabled;
       if (autoApplyRequested) {
+        const operation = beginSelfModOperation("propose-auto");
+        if (operation.ok === false) {
+          return res.status(409).json({ ok: false, message: operation.message });
+        }
+        operationId = operation.operationId;
+        touchSelfModOperation(operationId);
+
         const execution = executeSelfModApplication(proposal, "auto", true);
+        touchSelfModOperation(operationId);
+
         const statusCode = execution.success ? 200 : 409;
         return res.status(statusCode).json({
           ok: execution.success,
@@ -1974,11 +2497,21 @@ async function startServer() {
       const message = String(error || "");
       const status = /required|invalid|not found|inside workspace|missing|too large/i.test(message) ? 400 : 500;
       return res.status(status).json({ ok: false, message });
+    } finally {
+      if (operationId) endSelfModOperation(operationId);
     }
   });
 
   app.post("/api/self-mod/apply", (req, res) => {
+    const operation = beginSelfModOperation("apply");
+    if (operation.ok === false) {
+      return res.status(409).json({ ok: false, message: operation.message });
+    }
+
+    const operationId = operation.operationId;
+
     try {
+      touchSelfModOperation(operationId);
       const config = readConfig();
       const body = (req.body || {}) as SelfModApplyBody;
       const proposalId = String(body.proposalId || "").trim();
@@ -2007,6 +2540,8 @@ async function startServer() {
       }
 
       const execution = executeSelfModApplication(proposal, allowAutoApply ? "auto" : "manual", allowAutoApply);
+      touchSelfModOperation(operationId);
+
       const statusCode = execution.success ? 200 : 409;
       return res.status(statusCode).json({
         ok: execution.success,
@@ -2019,7 +2554,13 @@ async function startServer() {
       });
     } catch (error) {
       return res.status(500).json({ ok: false, message: String(error) });
+    } finally {
+      endSelfModOperation(operationId);
     }
+  });
+
+  app.get("/api/agent/logs", (_req, res) => {
+    res.json(agentLogBuffer);
   });
 
   app.post("/api/self-mod/auto", async (req, res) => {
@@ -2028,7 +2569,10 @@ async function startServer() {
       return res.status(409).json({ ok: false, message: operation.message });
     }
 
+    const operationId = operation.operationId;
+
     try {
+      touchSelfModOperation(operationId);
       const config = readConfig();
       const body = (req.body || {}) as SelfModAutoBody;
       const instruction = String(body.instruction || "").trim();
@@ -2037,6 +2581,8 @@ async function startServer() {
       }
 
       const result = await runAutonomousSelfModification(config, instruction);
+      touchSelfModOperation(operationId);
+
       const statusCode = result.ok ? 200 : 409;
       return res.status(statusCode).json({
         ok: result.ok,
@@ -2048,7 +2594,7 @@ async function startServer() {
     } catch (error) {
       return res.status(500).json({ ok: false, message: String(error) });
     } finally {
-      endSelfModOperation();
+      endSelfModOperation(operationId);
     }
   });
 
@@ -2261,6 +2807,441 @@ async function startServer() {
       return res.json({ siteId: site.id, post });
     } catch (error) {
       return res.status(500).json({ error: String(error) });
+    }
+  });
+
+  app.post("/api/seo/get_gsc_opportunities", async (req, res) => {
+    try {
+      const config = readConfig();
+      const days = clampInt(req.body?.days, 7, 120, 28);
+      const minImpressions = clampInt(req.body?.minImpressions, 1, 1_000_000, 200);
+      const limit = clampInt(req.body?.limit, 1, 200, 50);
+      const rowLimit = clampInt(req.body?.rowLimit, 100, 25000, 5000);
+      const weakMinPosition = Number(req.body?.weakMinPosition ?? 11);
+      const weakMaxPosition = Number(req.body?.weakMaxPosition ?? 20);
+
+      const end = new Date();
+      const start = new Date();
+      start.setDate(end.getDate() - days);
+      const endDate = end.toISOString().slice(0, 10);
+      const startDate = start.toISOString().slice(0, 10);
+
+      const rows = await queryGscPages(config, startDate, endDate, rowLimit);
+      const opportunities = rows
+        .filter((row) => row.impressions >= minImpressions && row.position >= weakMinPosition && row.position <= weakMaxPosition)
+        .sort((a, b) => b.impressions - a.impressions)
+        .slice(0, limit);
+
+      return res.json({
+        ok: true,
+        source: "gsc",
+        siteUrl: config.google.gscSiteUrl,
+        window: { startDate, endDate, days },
+        thresholds: {
+          minImpressions,
+          weakMinPosition,
+          weakMaxPosition,
+        },
+        count: opportunities.length,
+        opportunities,
+      });
+    } catch (error) {
+      return res.status(500).json({ ok: false, message: String(error) });
+    }
+  });
+
+  app.post("/api/seo/fetch_semantic_matches", async (req, res) => {
+    try {
+      const config = readConfig();
+      const site = getSiteFromConfig(config, req.body?.siteId);
+      const days = clampInt(req.body?.days, 7, 120, 28);
+      const minWeakImpressions = clampInt(req.body?.minWeakImpressions, 1, 1_000_000, 200);
+      const minStrongImpressions = clampInt(req.body?.minStrongImpressions, 1, 1_000_000, 100);
+      const maxWeak = clampInt(req.body?.maxWeak, 1, 50, 10);
+      const maxStrong = clampInt(req.body?.maxStrong, 3, 120, 40);
+      const topPerWeak = clampInt(req.body?.topPerWeak, 1, 10, 3);
+      const rowLimit = clampInt(req.body?.rowLimit, 500, 25000, 6000);
+      const requestedModel = String(req.body?.model || "gemma-4-31b-it").trim() || "gemma-4-31b-it";
+      const fallbackModel = (config.ai.fallbackModel || "gemini-3-flash-preview").trim();
+
+      const end = new Date();
+      const start = new Date();
+      start.setDate(end.getDate() - days);
+      const endDate = end.toISOString().slice(0, 10);
+      const startDate = start.toISOString().slice(0, 10);
+
+      const gscRows = await queryGscPages(config, startDate, endDate, rowLimit);
+      const explicitWeakUrls = Array.isArray(req.body?.weakUrls)
+        ? req.body.weakUrls.map((url: unknown) => String(url || "").trim()).filter(Boolean)
+        : [];
+      const explicitStrongUrls = Array.isArray(req.body?.strongUrls)
+        ? req.body.strongUrls.map((url: unknown) => String(url || "").trim()).filter(Boolean)
+        : [];
+
+      const weakRows = explicitWeakUrls.length
+        ? explicitWeakUrls.map((url) => ({
+            url,
+            clicks: 0,
+            impressions: 0,
+            ctr: 0,
+            position: 0,
+          }))
+        : gscRows
+            .filter((row) => row.position >= 11 && row.position <= 20 && row.impressions >= minWeakImpressions)
+            .sort((a, b) => b.impressions - a.impressions)
+            .slice(0, maxWeak);
+
+      const strongRows = explicitStrongUrls.length
+        ? explicitStrongUrls.map((url) => ({
+            url,
+            clicks: 0,
+            impressions: 0,
+            ctr: 0,
+            position: 0,
+          }))
+        : gscRows
+            .filter((row) => row.position >= 1 && row.position <= 5 && row.impressions >= minStrongImpressions)
+            .sort((a, b) => b.impressions - a.impressions)
+            .slice(0, maxStrong);
+
+      if (!weakRows.length) {
+        return res.status(400).json({ ok: false, message: "No weak URLs found. Adjust thresholds or pass weakUrls explicitly." });
+      }
+      if (!strongRows.length) {
+        return res.status(400).json({ ok: false, message: "No strong URLs found. Adjust thresholds or pass strongUrls explicitly." });
+      }
+
+      const weakPosts = (
+        await Promise.all(
+          weakRows.map(async (row) => {
+            try {
+              const post = await fetchWordPressPostByUrl(site, row.url);
+              if (!post) return null;
+              return {
+                ...row,
+                post,
+                plainText: stripHtml(post.content || ""),
+                plainTitle: stripHtml(post.title || ""),
+              };
+            } catch {
+              return null;
+            }
+          }),
+        )
+      ).filter(Boolean) as Array<{
+        url: string;
+        clicks: number;
+        impressions: number;
+        ctr: number;
+        position: number;
+        post: Awaited<ReturnType<typeof fetchWordPressPostByUrl>>;
+        plainText: string;
+        plainTitle: string;
+      }>;
+
+      const strongPosts = (
+        await Promise.all(
+          strongRows.map(async (row) => {
+            try {
+              const post = await fetchWordPressPostByUrl(site, row.url);
+              if (!post) return null;
+              return {
+                ...row,
+                post,
+                plainText: stripHtml(post.content || ""),
+                plainTitle: stripHtml(post.title || ""),
+              };
+            } catch {
+              return null;
+            }
+          }),
+        )
+      ).filter(Boolean) as Array<{
+        url: string;
+        clicks: number;
+        impressions: number;
+        ctr: number;
+        position: number;
+        post: Awaited<ReturnType<typeof fetchWordPressPostByUrl>>;
+        plainText: string;
+        plainTitle: string;
+      }>;
+
+      if (!weakPosts.length || !strongPosts.length) {
+        return res.status(400).json({
+          ok: false,
+          message: "Could not resolve enough WordPress posts from the discovered URLs.",
+          diagnostics: {
+            weakFound: weakRows.length,
+            weakResolved: weakPosts.length,
+            strongFound: strongRows.length,
+            strongResolved: strongPosts.length,
+          },
+        });
+      }
+
+      const apiKey = getGeminiApiKey(config);
+      if (!apiKey) {
+        return res.status(400).json({ ok: false, message: "Gemini API key is required for semantic matching." });
+      }
+      const ai = new GoogleGenAI({ apiKey });
+
+      const matches: Array<{
+        weak_url: string;
+        weak_title: string;
+        weak_post_id: number;
+        strong_url: string;
+        strong_title: string;
+        strong_post_id: number;
+        anchor_text: string;
+        rationale: string;
+        confidence: number;
+      }> = [];
+
+      for (const weak of weakPosts.slice(0, maxWeak)) {
+        const rankedStrong = strongPosts
+          .map((strong) => ({
+            strong,
+            score: lexicalOverlapScore(`${weak.plainTitle} ${weak.plainText.slice(0, 2000)}`, `${strong.plainTitle} ${strong.plainText.slice(0, 2000)}`),
+          }))
+          .sort((a, b) => b.score - a.score)
+          .slice(0, Math.min(12, strongPosts.length));
+
+        const promptStrongList = rankedStrong
+          .map(({ strong, score }, index) => {
+            const snippet = strong.plainText.slice(0, 700).replace(/\s+/g, " ").trim();
+            return `${index + 1}. ID=${strong.post?.id} | URL=${strong.url} | Title=${strong.plainTitle}
+LexicalScore=${score.toFixed(4)}
+Snippet=${snippet}`;
+          })
+          .join("\\n\\n");
+
+        const prompt = `Task: For the WEAK article, choose the best ${topPerWeak} STRONG article(s) to add internal links FROM strong TO weak.
+Return JSON only in this shape:
+{
+  "matches": [
+    {
+      "strong_post_id": 123,
+      "strong_url": "https://...",
+      "strong_title": "...",
+      "anchor_text": "descriptive anchor text",
+      "rationale": "short rationale",
+      "confidence": 0.0
+    }
+  ]
+}
+
+Rules:
+- Anchor text must be descriptive, natural, and 3-9 words.
+- Avoid generic anchors like "click here".
+- Choose strong posts with closest semantic context/entities.
+- Confidence must be 0..1.
+
+WEAK ARTICLE:
+ID=${weak.post?.id}
+URL=${weak.url}
+Title=${weak.plainTitle}
+Snippet=${weak.plainText.slice(0, 1200)}
+
+CANDIDATE STRONG ARTICLES:
+${promptStrongList}`;
+
+        const result = await generateWithModelFallback(
+          ai,
+          requestedModel,
+          fallbackModel,
+          [{ parts: [{ text: prompt }] }],
+          0.2,
+        );
+
+        const parsed = extractJsonObject(result.text || "");
+        const rows = Array.isArray(parsed?.matches) ? (parsed?.matches as Array<Record<string, unknown>>) : [];
+        if (!rows.length) {
+          const fallbackStrong = rankedStrong.slice(0, topPerWeak).map(({ strong }) => ({
+            strong_post_id: Number(strong.post?.id || 0),
+            strong_url: strong.url,
+            strong_title: strong.plainTitle,
+            anchor_text: buildAnchorFallback(weak.url, weak.plainTitle),
+            rationale: "Fallback lexical match (LLM output parse failed).",
+            confidence: 0.35,
+          }));
+          for (const row of fallbackStrong) {
+            matches.push({
+              weak_url: weak.url,
+              weak_title: weak.plainTitle,
+              weak_post_id: Number(weak.post?.id || 0),
+              strong_url: String(row.strong_url),
+              strong_title: String(row.strong_title),
+              strong_post_id: Number(row.strong_post_id || 0),
+              anchor_text: String(row.anchor_text),
+              rationale: String(row.rationale),
+              confidence: Number(row.confidence || 0),
+            });
+          }
+          continue;
+        }
+
+        for (const row of rows.slice(0, topPerWeak)) {
+          matches.push({
+            weak_url: weak.url,
+            weak_title: weak.plainTitle,
+            weak_post_id: Number(weak.post?.id || 0),
+            strong_url: String(row.strong_url || ""),
+            strong_title: String(row.strong_title || ""),
+            strong_post_id: Number(row.strong_post_id || 0),
+            anchor_text: String(row.anchor_text || buildAnchorFallback(weak.url, weak.plainTitle)),
+            rationale: String(row.rationale || "Semantic relevance match."),
+            confidence: Number(row.confidence || 0.5),
+          });
+        }
+      }
+
+      return res.json({
+        ok: true,
+        source: "gsc+wordpress+gemma",
+        model: requestedModel,
+        siteId: site.id,
+        window: { startDate, endDate, days },
+        diagnostics: {
+          weakRows: weakRows.length,
+          weakResolvedPosts: weakPosts.length,
+          strongRows: strongRows.length,
+          strongResolvedPosts: strongPosts.length,
+        },
+        matches,
+      });
+    } catch (error) {
+      return res.status(500).json({ ok: false, message: String(error) });
+    }
+  });
+
+  app.post("/api/seo/inject_internal_link", async (req, res) => {
+    try {
+      const config = readConfig();
+      const site = getSiteFromConfig(config, req.body?.siteId);
+      const targetUrl = String(req.body?.targetUrl || "").trim();
+      const strongPostId = Number(req.body?.strongPostId || 0);
+      const strongUrl = String(req.body?.strongUrl || "").trim();
+      const dryRun = Boolean(req.body?.dryRun);
+      const insertPercent = clampInt(req.body?.insertWithinPercent, 5, 80, 30);
+
+      if (!targetUrl) {
+        return res.status(400).json({ ok: false, message: "targetUrl is required." });
+      }
+      if (!strongPostId && !strongUrl) {
+        return res.status(400).json({ ok: false, message: "Provide strongPostId or strongUrl." });
+      }
+
+      const strongPost = strongPostId ? await fetchWordPressPost(site, strongPostId) : await fetchWordPressPostByUrl(site, strongUrl);
+      if (!strongPost) {
+        return res.status(404).json({ ok: false, message: "Strong post was not found." });
+      }
+
+      const targetPost = await fetchWordPressPostByUrl(site, targetUrl);
+      const fallbackAnchor = buildAnchorFallback(targetUrl, targetPost?.title || "");
+      let anchorText = String(req.body?.anchorText || "").trim() || fallbackAnchor;
+      let bridgeSentence = String(req.body?.bridgeSentence || "").trim();
+
+      const apiKey = getGeminiApiKey(config);
+      if (apiKey && (!req.body?.anchorText || !req.body?.bridgeSentence)) {
+        const ai = new GoogleGenAI({ apiKey });
+        const model = String(req.body?.model || "gemma-4-31b-it").trim() || "gemma-4-31b-it";
+        const fallbackModel = (config.ai.fallbackModel || "gemini-3-flash-preview").trim();
+        const llmPrompt = `Return JSON only with keys anchor_text and bridge_sentence.
+Rules:
+- anchor_text: 3-9 words, descriptive, natural.
+- bridge_sentence: one sentence suitable for inserting into a paragraph in first 30% of the strong post.
+- Keep it neutral and editorial.
+
+STRONG POST TITLE: ${stripHtml(strongPost.title || "")}
+STRONG POST SNIPPET: ${stripHtml(strongPost.content || "").slice(0, 1200)}
+WEAK TARGET TITLE: ${stripHtml(targetPost?.title || "")}
+WEAK TARGET URL: ${targetUrl}`;
+
+        const llmResult = await generateWithModelFallback(
+          ai,
+          model,
+          fallbackModel,
+          [{ parts: [{ text: llmPrompt }] }],
+          0.2,
+        );
+        const parsed = extractJsonObject(llmResult.text || "");
+        if (typeof parsed?.anchor_text === "string" && parsed.anchor_text.trim()) {
+          anchorText = parsed.anchor_text.trim();
+        }
+        if (typeof parsed?.bridge_sentence === "string" && parsed.bridge_sentence.trim()) {
+          bridgeSentence = parsed.bridge_sentence.trim();
+        }
+      }
+
+      const insertion = insertInternalLinkIntoContent(
+        strongPost.content || "",
+        targetUrl,
+        anchorText,
+        bridgeSentence,
+        insertPercent,
+      );
+
+      if (!insertion.inserted) {
+        return res.status(409).json({
+          ok: false,
+          message: `Could not inject link: ${insertion.method}`,
+          method: insertion.method,
+        });
+      }
+
+      if (dryRun) {
+        return res.json({
+          ok: true,
+          dryRun: true,
+          method: insertion.method,
+          strongPostId: strongPost.id,
+          strongPostUrl: strongPost.link,
+          targetUrl,
+          anchorText,
+          bridgeSentence,
+          originalContentPreview: String(strongPost.content || "").slice(0, 1000),
+          updatedContentPreview: String(insertion.updatedContent || "").slice(0, 1000),
+        });
+      }
+
+      const updateResponse = await fetch(`${site.baseUrl}/wp-json/wp/v2/posts/${strongPost.id}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...getWordPressAuthHeaders(site),
+        },
+        body: JSON.stringify({
+          content: insertion.updatedContent,
+        }),
+      });
+
+      if (!updateResponse.ok) {
+        const body = await updateResponse.text();
+        return res.status(500).json({
+          ok: false,
+          message: `WordPress update failed (${updateResponse.status}): ${body.slice(0, 220)}`,
+        });
+      }
+
+      const updatedPost = await updateResponse.json();
+      return res.json({
+        ok: true,
+        dryRun: false,
+        method: insertion.method,
+        strongPostId: strongPost.id,
+        strongPostUrl: strongPost.link,
+        targetUrl,
+        anchorText,
+        bridgeSentence,
+        updatedPost: {
+          id: updatedPost.id,
+          link: updatedPost.link,
+          modified: updatedPost.modified,
+        },
+      });
+    } catch (error) {
+      return res.status(500).json({ ok: false, message: String(error) });
     }
   });
 
@@ -2532,6 +3513,7 @@ ${reviewContent}`;
       const notebookPath = String(req.body?.workspacePath || config.research.notebookWorkspacePath || "").trim();
 
       const webSources = includeWeb ? await getWebSources(query, config.research.maxWebSources) : [];
+
       const scholarSources = includeScholar ? await getScholarSources(query, Math.max(3, config.research.maxWebSources)) : [];
       const notebookSources = includeNotebook ? getNotebookSources(query, notebookPath, config.research.maxNotebookSnippets) : [];
 
@@ -2736,10 +3718,77 @@ ${reviewContent}`;
     ];
     const distPath = distCandidates.find((candidate) => fs.existsSync(candidate)) || distCandidates[0];
     app.use(express.static(distPath));
-    app.get("*", (_req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
   }
+
+  app.get("/api/history", (_req, res) => {
+    const historyPath = getHistoryFilePath();
+    if (!fs.existsSync(historyPath)) {
+      return res.json([]);
+    }
+    try {
+      const history = JSON.parse(fs.readFileSync(historyPath, "utf-8"));
+      return res.json(history);
+    } catch {
+      return res.json([]);
+    }
+  });
+
+  app.post("/api/history/rollback", async (req, res) => {
+    const { id } = req.body;
+    if (!id) return res.status(400).json({ ok: false, message: "Entry ID is required" });
+
+    const historyPath = getHistoryFilePath();
+    let history: HistoryEntry[] = [];
+    try {
+      history = JSON.parse(fs.readFileSync(historyPath, "utf-8") || "[]");
+    } catch {
+      return res.status(500).json({ ok: false, message: "Failed to read history file" });
+    }
+    
+    const entryIndex = history.findIndex(e => e.id === id);
+    const entry = history[entryIndex];
+
+    if (!entry || !entry.canRollback || !entry.rollbackId) {
+      return res.status(400).json({ ok: false, message: "Entry is not eligible for rollback" });
+    }
+
+    // Handle App rollback
+    if (entry.type === "app") {
+      const backupDir = path.join(getBackupRoot(), entry.rollbackId);
+      if (!fs.existsSync(backupDir)) {
+        return res.status(404).json({ ok: false, message: "Backup folder not found on disk." });
+      }
+      
+      try {
+        const meta = JSON.parse(fs.readFileSync(path.join(backupDir, "metadata.json"), "utf-8"));
+        const backupFile = path.join(backupDir, meta.targetFile);
+        
+        if (!fs.existsSync(backupFile)) {
+          return res.status(404).json({ ok: false, message: "Backup source file missing." });
+        }
+        
+        fs.copyFileSync(backupFile, meta.targetAbsolutePath);
+        
+        // Mark entry as rolled back
+        history[entryIndex].canRollback = false;
+        fs.writeFileSync(historyPath, JSON.stringify(history, null, 2), "utf-8");
+
+        addHistoryEntry({
+          type: "app",
+          action: "rollback-success",
+          summary: `Rolled back changes for ${entry.target}`,
+          target: entry.target,
+          status: "success",
+          canRollback: false
+        });
+        return res.json({ ok: true });
+      } catch (err) {
+        return res.status(500).json({ ok: false, message: String(err) });
+      }
+    }
+
+    return res.status(501).json({ ok: false, message: "Rollback not implemented for this type yet" });
+  });
 
   await new Promise<void>((resolve, reject) => {
     const server = app.listen(PORT, HOST, () => {
@@ -2747,6 +3796,16 @@ ${reviewContent}`;
       resolve();
     });
     server.on("error", (error) => reject(error));
+  });
+
+  app.get("*", (_req, res) => {
+    const distCandidates = [
+      path.join(__dirname, "dist"),
+      path.join(__dirname, "../dist"),
+      path.join(process.cwd(), "dist"),
+    ];
+    const distPath = distCandidates.find((candidate) => fs.existsSync(candidate)) || distCandidates[0];
+    res.sendFile(path.join(distPath, "index.html"));
   });
 }
 

@@ -18,6 +18,7 @@ import {
   RefreshCcw
 } from 'lucide-react';
 import { cn } from '../lib/utils';
+import AgentLogViewer from './AgentLogViewer';
 
 interface SidebarProps {
   activeTab: string;
@@ -215,6 +216,7 @@ export default function Sidebar({ activeTab, setActiveTab, isOpen, setIsOpen }: 
               Ship to Cloud
             </button>
 
+            <AgentLogViewer />
             <WPHealthMonitor activeTab={activeTab} setActiveTab={setActiveTab} />
           </div>
         </div>

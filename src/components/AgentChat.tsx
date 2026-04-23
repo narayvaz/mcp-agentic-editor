@@ -17,6 +17,8 @@ import {
   Check,
   RotateCcw,
   Wrench,
+  Square,
+  Settings,
 } from 'lucide-react';
 import { getAgentResponse, AgentPart, AgentResearchOptions, SelfModificationExecution } from '../services/gemini';
 import ReactMarkdown from 'react-markdown';
@@ -237,6 +239,7 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [activeThreadId, setActiveThreadId] = useState('');
   const [showArchived, setShowArchived] = useState(false);
+  const [showModes, setShowModes] = useState(false);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [attachments, setAttachments] = useState<{ file: File; type: 'image' | 'audio' | 'video' | 'file'; preview: string }[]>([]);
@@ -256,6 +259,7 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
   const [isSelfModBusy, setIsSelfModBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     try {
@@ -435,23 +439,51 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
     setEditingDraft('');
   };
 
-  const saveEditedPrompt = () => {
+  const saveEditedPrompt = async () => {
     if (!activeThread || !editingMessageId) return;
     const nextContent = editingDraft.trim();
     if (!nextContent) return;
 
+    // We manually construct the updated messages list
+    const updatedMessages = activeThread.messages.map((message) =>
+      message.id === editingMessageId
+        ? { ...message, content: nextContent, editedAt: new Date().toISOString() }
+        : message
+    );
+
     updateActiveThread((thread) => ({
       ...thread,
       updatedAt: new Date().toISOString(),
-      messages: thread.messages.map((message) =>
-        message.id === editingMessageId
-          ? { ...message, content: nextContent, editedAt: new Date().toISOString() }
-          : message,
-      ),
+      messages: updatedMessages,
     }));
 
     setEditingMessageId(null);
     setEditingDraft('');
+
+    // Trigger regeneration
+    setIsTyping(true);
+    abortControllerRef.current = new AbortController();
+
+    const parts: AgentPart[] = [];
+    const recentConversation = updatedMessages.slice(-12)
+      .map((message) => `${message.role.toUpperCase()}: ${message.content}`)
+      .join('\n');
+    const mergedContext = [
+      context || '',
+      recentConversation ? `Recent conversation context:\n${recentConversation}` : '',
+    ].filter(Boolean).join('\n\n');
+
+    try {
+      const response = await getAgentResponse(nextContent, mergedContext, parts, researchMode, abortControllerRef.current.signal);
+      pushAgentMessage(response.text || 'No response');
+    } catch (error: any) {
+      if (error.name !== 'AbortError') {
+        pushAgentMessage('Error communicating with the agent: ' + String(error));
+      }
+    } finally {
+      setIsTyping(false);
+      abortControllerRef.current = null;
+    }
   };
 
   const pushAgentMessage = (content: string) => {
@@ -647,6 +679,8 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
       return;
     }
 
+    abortControllerRef.current = new AbortController();
+
     const parts: AgentPart[] = [];
     for (const attachment of currentAttachments) {
       const base64Data = attachment.preview.split(',')[1];
@@ -668,11 +702,27 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
       .filter(Boolean)
       .join('\n\n');
 
-    const response = await getAgentResponse(userPrompt, mergedContext, parts, researchMode);
-    const audit = formatExecutionAudit(response.selfModification?.execution);
-    pushAgentMessage([response.text || 'No response', audit].filter(Boolean).join('\n\n'));
+    try {
+      const response = await getAgentResponse(userPrompt, mergedContext, parts, researchMode, abortControllerRef.current.signal);
+      const audit = formatExecutionAudit(response.selfModification?.execution);
+      pushAgentMessage([response.text || 'No response', audit].filter(Boolean).join('\n\n'));
+    } catch (error: any) {
+      if (error.name !== 'AbortError') {
+        pushAgentMessage('Error communicating with the agent.');
+      }
+    } finally {
+      setIsTyping(false);
+      abortControllerRef.current = null;
+    }
+  };
 
-    setIsTyping(false);
+  const handleStop = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+      setIsTyping(false);
+      pushAgentMessage('Generation stopped by user.');
+    }
   };
 
   const renderAttachment = (attachment: { type: 'image' | 'audio' | 'video' | 'file'; url: string; name: string }) => {
@@ -708,56 +758,50 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
   }
 
   return (
-    <div className="flex flex-col h-full liquid-surface-strong rounded-2xl border overflow-hidden">
-      <div className="p-3 border-b border-white/40 bg-white/20 space-y-3">
+    <div className="flex flex-col h-full bg-slate-950 border border-white/10 rounded-2xl overflow-hidden shadow-2xl">
+      {/* Compact Header */}
+      <div className="px-3 py-2 border-b border-white/40 bg-white/20 space-y-2">
         <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <Bot size={18} className="text-sky-600 shrink-0" />
-            <h2 className="font-semibold text-xs uppercase tracking-wider liquid-title truncate">Azat Studio Intelligence</h2>
-            <span className="px-2 py-0.5 liquid-pill text-emerald-600 text-[8px] font-bold rounded-full border uppercase tracking-widest">
-              Multimodal
-            </span>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <Bot size={16} className="text-sky-600 shrink-0" />
+            <h2 className="font-bold text-[11px] uppercase tracking-wider liquid-title truncate">Studio AI</h2>
           </div>
-          {onClose && (
+          <div className="flex items-center gap-1 shrink-0">
             <button
-              onClick={onClose}
-              className="p-1.5 liquid-soft hover:liquid-title hover:bg-white/40 rounded-lg transition-colors"
-              aria-label="Close chat"
+              onClick={() => setShowArchived((prev) => !prev)}
+              className={`p-1.5 rounded-lg transition-colors ${showArchived ? 'text-amber-600 bg-amber-500/10' : 'liquid-soft hover:liquid-title hover:bg-white/30'}`}
+              title={showArchived ? 'Viewing archived — click for active' : 'Viewing active — click for archived'}
             >
-              <X size={16} />
+              {showArchived ? <ArchiveRestore size={13} /> : <Archive size={13} />}
             </button>
-          )}
+            <button onClick={createNewChat} className="p-1.5 liquid-soft hover:liquid-title hover:bg-white/30 rounded-lg transition-colors" title="New chat">
+              <Plus size={13} />
+            </button>
+            <button onClick={deleteCurrentThread} className="p-1.5 text-rose-500/70 hover:text-rose-600 hover:bg-rose-500/10 rounded-lg transition-colors" title="Delete chat">
+              <Trash2 size={13} />
+            </button>
+            {onClose && (
+              <button
+                onClick={onClose}
+                className="p-1.5 liquid-soft hover:liquid-title hover:bg-white/40 rounded-lg transition-colors"
+                aria-label="Close chat"
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
         </div>
-
-        <div className="flex items-center gap-2">
-          <select
-            value={activeThreadId}
-            onChange={(e) => setActiveThreadId(e.target.value)}
-            className="liquid-input px-2 py-1.5 text-xs rounded-lg flex-1"
-          >
-            {selectableThreads.map((thread) => (
-              <option key={thread.id} value={thread.id}>
-                {thread.title}
-              </option>
-            ))}
-          </select>
-          <button onClick={createNewChat} className="liquid-pill p-2 rounded-lg" title="New chat">
-            <Plus size={14} />
-          </button>
-          <button onClick={toggleArchiveCurrentThread} className="liquid-pill p-2 rounded-lg" title={activeThread.status === 'archived' ? 'Unarchive chat' : 'Archive chat'}>
-            {activeThread.status === 'archived' ? <ArchiveRestore size={14} /> : <Archive size={14} />}
-          </button>
-          <button onClick={deleteCurrentThread} className="liquid-pill p-2 rounded-lg text-rose-600" title="Delete chat">
-            <Trash2 size={14} />
-          </button>
-        </div>
-
-        <button
-          onClick={() => setShowArchived((prev) => !prev)}
-          className="text-[10px] liquid-soft hover:liquid-title"
+        <select
+          value={activeThreadId}
+          onChange={(e) => setActiveThreadId(e.target.value)}
+          className="w-full liquid-input px-2.5 py-1.5 text-[11px] rounded-lg appearance-none bg-transparent cursor-pointer"
         >
-          {showArchived ? 'Viewing archived chats' : 'Viewing active chats'} · Click to switch
-        </button>
+          {selectableThreads.map((thread) => (
+            <option key={thread.id} value={thread.id} className="text-gray-900">
+              {thread.title}
+            </option>
+          ))}
+        </select>
       </div>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -814,7 +858,7 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
                       </div>
                     </div>
                   ) : (
-                    <div className={`prose prose-sm max-w-none text-sm leading-relaxed ${msg.role === 'user' ? 'prose-invert text-white' : 'liquid-title'}`}>
+                    <div className={`prose prose-sm max-w-full text-sm leading-relaxed overflow-x-auto break-words ${msg.role === 'user' ? 'prose-invert text-white' : 'liquid-title'}`}>
                       <ReactMarkdown>{msg.content}</ReactMarkdown>
                     </div>
                   )}
@@ -844,120 +888,129 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
         )}
       </div>
 
-      <div className="p-4 border-t border-white/40 bg-white/20 space-y-3">
-        <div className="text-[11px] readable-copy">
-          Chat threads are stored locally on this device. You can create, archive, delete, and edit prompts.
+      {/* Compact Footer */}
+      <div className="px-3 py-2 border-t border-white/40 bg-white/20 space-y-2">
+        {/* Modes: collapsible compact row */}
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => setShowModes((prev) => !prev)}
+            className={`p-1.5 rounded-lg transition-all text-[10px] font-bold ${
+              showModes ? 'liquid-accent text-white' : 'liquid-pill liquid-soft'
+            }`}
+            title="Toggle research modes"
+          >
+            <Settings size={13} />
+          </button>
+
+          {showModes ? (
+            <>
+              {[
+                { key: 'web' as const, label: 'Web' },
+                { key: 'scholar' as const, label: 'Scholar' },
+                { key: 'notebook' as const, label: 'NB' },
+                { key: 'articleMode' as const, label: 'Article' },
+              ].map(({ key, label }) => (
+                <button
+                  key={key}
+                  onClick={() => setResearchMode((prev) => ({ ...prev, [key]: !prev[key] }))}
+                  className={`px-2 py-0.5 rounded-full text-[9px] font-bold border transition-all ${
+                    researchMode[key] ? 'liquid-accent text-white' : 'liquid-pill liquid-soft'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+              <button
+                onClick={() => setSelfModMode((prev) => !prev)}
+                className={`px-2 py-0.5 rounded-full text-[9px] font-bold border inline-flex items-center gap-0.5 transition-all ${
+                  selfModMode ? 'liquid-accent text-white' : 'liquid-pill liquid-soft'
+                }`}
+              >
+                <Wrench size={9} />
+                Mod
+              </button>
+            </>
+          ) : (
+            <div className="flex items-center gap-1 text-[9px] liquid-soft">
+              {researchMode.web && <span className="px-1.5 py-0.5 rounded-full bg-sky-500/15 text-sky-700 font-bold">Web</span>}
+              {researchMode.scholar && <span className="px-1.5 py-0.5 rounded-full bg-sky-500/15 text-sky-700 font-bold">Scholar</span>}
+              {researchMode.notebook && <span className="px-1.5 py-0.5 rounded-full bg-sky-500/15 text-sky-700 font-bold">NB</span>}
+              {researchMode.articleMode && <span className="px-1.5 py-0.5 rounded-full bg-sky-500/15 text-sky-700 font-bold">Article</span>}
+              {selfModMode && <span className="px-1.5 py-0.5 rounded-full bg-purple-500/15 text-purple-700 font-bold">Mod</span>}
+              {!researchMode.web && !researchMode.scholar && !researchMode.notebook && !researchMode.articleMode && !selfModMode && (
+                <span className="italic">No modes</span>
+              )}
+            </div>
+          )}
         </div>
 
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={() => setResearchMode((prev) => ({ ...prev, web: !prev.web }))}
-            className={`px-2.5 py-1 rounded-full text-[10px] font-semibold border ${
-              researchMode.web ? 'liquid-accent text-white' : 'liquid-pill liquid-title'
-            }`}
-          >
-            Web
-          </button>
-          <button
-            onClick={() => setResearchMode((prev) => ({ ...prev, scholar: !prev.scholar }))}
-            className={`px-2.5 py-1 rounded-full text-[10px] font-semibold border ${
-              researchMode.scholar ? 'liquid-accent text-white' : 'liquid-pill liquid-title'
-            }`}
-          >
-            Scholar
-          </button>
-          <button
-            onClick={() => setResearchMode((prev) => ({ ...prev, notebook: !prev.notebook }))}
-            className={`px-2.5 py-1 rounded-full text-[10px] font-semibold border ${
-              researchMode.notebook ? 'liquid-accent text-white' : 'liquid-pill liquid-title'
-            }`}
-          >
-            Notebook
-          </button>
-          <button
-            onClick={() => setResearchMode((prev) => ({ ...prev, articleMode: !prev.articleMode }))}
-            className={`px-2.5 py-1 rounded-full text-[10px] font-semibold border ${
-              researchMode.articleMode ? 'liquid-accent text-white' : 'liquid-pill liquid-title'
-            }`}
-          >
-            Article Mode
-          </button>
-          <button
-            onClick={() => setSelfModMode((prev) => !prev)}
-            className={`px-2.5 py-1 rounded-full text-[10px] font-semibold border inline-flex items-center gap-1 ${
-              selfModMode ? 'liquid-accent text-white' : 'liquid-pill liquid-title'
-            }`}
-          >
-            <Wrench size={11} />
-            Self-Modify
-          </button>
-        </div>
-
+        {/* Self-Modify: compact inline */}
         {selfModMode && (
-          <div className="space-y-2 liquid-surface border rounded-xl p-3">
-            <div className="text-[10px] liquid-soft uppercase tracking-wider font-bold">Self-mod target file (optional)</div>
+          <div className="flex items-center gap-2">
             <input
               value={selfModTargetFile}
               onChange={(e) => setSelfModTargetFile(e.target.value)}
-              placeholder="Leave empty for automatic file discovery"
-              className="w-full px-3 py-2 liquid-input rounded-lg text-xs"
+              placeholder="Target file (empty = auto)"
+              className="flex-1 px-2.5 py-1.5 liquid-input rounded-lg text-[11px]"
             />
-            <p className="text-[11px] liquid-muted">
-              Send the change request in chat. If file is empty, the agent will auto-discover the target. Current mode: {selfModAutoApplyEnabled ? 'auto-apply with backup' : 'manual approval'}.
-            </p>
+            <span className="text-[9px] liquid-soft shrink-0">{selfModAutoApplyEnabled ? 'Auto' : 'Manual'}</span>
           </div>
         )}
 
+        {/* Self-Mod Proposal: compact */}
         {selfModProposal && (
-          <div className="space-y-2 liquid-surface border rounded-xl p-3">
-            <div className="text-xs liquid-title font-semibold">Pending Self-Mod Proposal</div>
-            <div className="text-[11px] liquid-muted">File: {selfModProposal.targetFile}</div>
-            <div className="text-[11px] liquid-muted">Approval code: <code>{selfModProposal.approvalCode}</code></div>
-            <div className="flex gap-2">
+          <div className="liquid-surface border rounded-lg p-2 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold liquid-title">Pending: {selfModProposal.targetFile.split('/').pop()}</span>
+              <code className="text-[9px] liquid-soft">{selfModProposal.approvalCode}</code>
+            </div>
+            <div className="flex gap-1.5">
               <input
                 value={selfModApprovalInput}
                 onChange={(e) => setSelfModApprovalInput(e.target.value)}
-                placeholder="Type approval code to apply"
-                className="flex-1 px-3 py-2 liquid-input rounded-lg text-xs"
+                placeholder="Approval code"
+                className="flex-1 px-2 py-1 liquid-input rounded-lg text-[10px]"
               />
               <button
                 onClick={applySelfModification}
                 disabled={isSelfModBusy || !selfModApprovalInput.trim()}
-                className="px-3 py-2 liquid-accent text-white rounded-lg text-xs font-bold disabled:opacity-60"
+                className="px-2.5 py-1 liquid-accent text-white rounded-lg text-[10px] font-bold disabled:opacity-60"
               >
-                {isSelfModBusy ? 'Applying...' : 'Apply'}
+                {isSelfModBusy ? '...' : 'Apply'}
               </button>
             </div>
           </div>
         )}
 
+        {/* Attachment previews: smaller */}
         {attachments.length > 0 && (
-          <div className="flex flex-wrap gap-2 pb-2">
+          <div className="flex flex-wrap gap-1.5">
             {attachments.map((att, idx) => (
               <div key={`upload-${idx}`} className="relative group">
-                <div className="w-16 h-16 rounded-lg border border-white/50 liquid-pill overflow-hidden flex items-center justify-center">
+                <div className="w-12 h-12 rounded-lg border border-white/50 liquid-pill overflow-hidden flex items-center justify-center">
                   {att.type === 'image' ? (
                     <img src={att.preview} alt="preview" className="w-full h-full object-cover" />
                   ) : att.type === 'audio' ? (
-                    <Music size={24} className="text-blue-500" />
+                    <Music size={18} className="text-blue-500" />
                   ) : att.type === 'video' ? (
-                    <Video size={24} className="text-purple-500" />
+                    <Video size={18} className="text-purple-500" />
                   ) : (
-                    <FileText size={24} className="liquid-muted" />
+                    <FileText size={18} className="liquid-muted" />
                   )}
                 </div>
                 <button
                   onClick={() => removeAttachment(idx)}
-                  className="absolute -top-1.5 -right-1.5 p-0.5 bg-red-500 text-white rounded-full shadow-sm hover:bg-red-600 transition-colors"
+                  className="absolute -top-1 -right-1 p-0.5 bg-red-500 text-white rounded-full shadow-sm hover:bg-red-600 transition-colors"
                 >
-                  <X size={10} />
+                  <X size={8} />
                 </button>
               </div>
             ))}
           </div>
         )}
 
-        <div className="relative flex items-center gap-2">
+        {/* Input bar */}
+        <div className="relative flex items-center gap-1.5">
           <input
             type="file"
             ref={fileInputRef}
@@ -968,10 +1021,10 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
           />
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="liquid-pill p-2 liquid-muted hover:text-sky-700 rounded-lg transition-colors"
+            className="p-2 liquid-soft hover:text-sky-700 rounded-lg transition-colors shrink-0"
             title="Attach files"
           >
-            <Paperclip size={20} />
+            <Paperclip size={16} />
           </button>
           <div className="relative flex-1">
             <input
@@ -979,16 +1032,27 @@ export default function AgentChat({ context, onClose }: AgentChatProps) {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-              placeholder="Ask for checks, web facts, scholar findings, or deep-dive analysis..."
-              className="w-full pl-4 pr-12 py-3 liquid-input border rounded-xl focus:outline-none transition-all text-sm liquid-title"
+              placeholder="Ask anything..."
+              className="w-full pl-3 pr-10 py-2.5 liquid-input border rounded-xl focus:outline-none transition-all text-sm liquid-title"
             />
-            <button
-              onClick={handleSend}
-              disabled={isTyping || (!input.trim() && attachments.length === 0)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-sky-700 hover:bg-white/40 rounded-lg transition-colors disabled:opacity-50"
-            >
-              <Send size={18} />
-            </button>
+            {isTyping ? (
+              <button
+                onClick={handleStop}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+                title="Stop generation"
+              >
+                <Square size={16} fill="currentColor" />
+              </button>
+            ) : (
+              <button
+                onClick={handleSend}
+                disabled={!input.trim() && attachments.length === 0}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1.5 text-sky-700 hover:bg-white/40 rounded-lg transition-colors disabled:opacity-50"
+                title="Send message"
+              >
+                <Send size={16} />
+              </button>
+            )}
           </div>
         </div>
       </div>
