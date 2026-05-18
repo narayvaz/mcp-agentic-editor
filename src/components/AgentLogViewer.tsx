@@ -45,8 +45,15 @@ export default function AgentLogViewer() {
     const upperLog = log.toUpperCase();
     if (filter === 'ALL') return true;
     if (filter === 'ERROR') return upperLog.includes('ERROR');
-    if (filter === 'WARN') return upperLog.includes('WARN') || upperLog.includes('GATE');
-    if (filter === 'INFO') return upperLog.includes('INFO') || (!upperLog.includes('ERROR') && !upperLog.includes('WARN'));
+    if (filter === 'WARN') return upperLog.includes('WARN');
+    if (filter === 'INFO') {
+      // INFO includes explicit INFO, GATE (success), and any non-critical logs
+      return (
+        upperLog.includes('INFO') || 
+        upperLog.includes('GATE') || 
+        (!upperLog.includes('ERROR') && !upperLog.includes('WARN'))
+      );
+    }
     return true;
   });
 
