@@ -176,11 +176,10 @@ export default function AutoResearch() {
     setClearingLog(true);
     try {
       const res = await fetch('/api/autoresearch/clear-failed', { method: 'DELETE' });
-      const data = await res.json();
-      if (data.ok) {
-        await fetchLog();
-        await fetchStatus();
-      }
+      await fetchLog();
+      await fetchStatus();
+    } catch (err) {
+      console.error('Failed to clear failed experiments:', err);
     } finally {
       setClearingLog(false);
     }
@@ -278,7 +277,7 @@ export default function AutoResearch() {
               </div>
               <div className="h-2 w-full bg-slate-100/50 rounded-full overflow-hidden border border-slate-200/30">
                 <div 
-                  className="h-full bg-gradient-to-r from-indigo-600 to-indigo-400 rounded-full transition-all duration-1000 ease-out" 
+                  className="h-full bg-gradient-to-r from-indigo-600 to-indigo-400 rounded-full transition-all duration-1000 ease-out"
                   style={{ width: `${status?.winRate ?? 0}%` }}
                 />
               </div>
@@ -295,7 +294,7 @@ export default function AutoResearch() {
                 </div>
                 <div className="h-1.5 w-full bg-slate-100/50 rounded-full overflow-hidden border border-slate-200/30">
                   <div 
-                    className="h-full bg-gradient-to-r from-emerald-600 to-emerald-400 rounded-full transition-all duration-1000 ease-out" 
+                    className="h-full bg-gradient-to-r from-emerald-600 to-emerald-400 rounded-full transition-all duration-1000 ease-out"
                     style={{ width: `${status?.experimentCount ? (status.keptCount / status.experimentCount) * 100 : 0}%` }}
                   />
                 </div>
@@ -311,7 +310,7 @@ export default function AutoResearch() {
                 </div>
                 <div className="h-1.5 w-full bg-slate-100/50 rounded-full overflow-hidden border border-slate-200/30">
                   <div 
-                    className="h-full bg-gradient-to-r from-amber-600 to-amber-400 rounded-full transition-all duration-1000 ease-out" 
+                    className="h-full bg-gradient-to-r from-amber-600 to-amber-400 rounded-full transition-all duration-1000 ease-out"
                     style={{ width: `${status?.bestScore ? ((status.currentScore || 0) / status.bestScore) * 100 : 0}%` }}
                   />
                 </div>
@@ -454,11 +453,11 @@ export default function AutoResearch() {
             </h3>
             <div className="flex items-center gap-2">
               <span className="text-[10px] liquid-soft">{log.length} total</span>
-              {log.some(e => !e.hypothesis || e.hypothesis.trim().length <= 5 || e.status === 'running') && (
+              {log.some(e => e.status === 'error' || !e.hypothesis || e.hypothesis.trim().length <= 5 || (e.status === 'running' && !isRunning)) && (
                 <button
                   onClick={handleClearFailed}
                   disabled={clearingLog}
-                  title="Remove stuck/empty experiment entries"
+                  title="Remove stuck/empty/error experiment entries"
                   className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold text-rose-600 bg-rose-50 border border-rose-200 hover:bg-rose-100 transition-all disabled:opacity-50 active:scale-95"
                 >
                   {clearingLog ? <RefreshCw size={10} className="animate-spin" /> : '🧹'}
