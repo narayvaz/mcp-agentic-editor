@@ -34,24 +34,23 @@ export default function AgentLogViewer() {
 
   const getLogStyle = (log: string) => {
     const upperLog = log.toUpperCase();
-    if (upperLog.includes('ERROR')) return 'text-rose-500 font-bold';
-    if (upperLog.includes('WARN')) return 'text-amber-400';
-    if (upperLog.includes('GATE')) return 'text-emerald-400';
-    if (upperLog.includes('INFO')) return 'text-sky-400';
-    return 'text-slate-400';
+    if (upperLog.includes('ERROR') || upperLog.includes('FAIL')) return 'text-rose-400 bg-rose-500/5 border-l border-rose-500/30';
+    if (upperLog.includes('WARN')) return 'text-amber-300 bg-amber-500/5 border-l border-amber-500/30';
+    if (upperLog.includes('GATE')) return 'text-emerald-400 bg-emerald-500/5 border-l border-emerald-500/30';
+    if (upperLog.includes('INFO')) return 'text-sky-400 bg-sky-500/5 border-l border-sky-500/30';
+    return 'text-slate-400 border-l border-transparent';
   };
 
   const filteredLogs = logs.filter((log) => {
     const upperLog = log.toUpperCase();
     if (filter === 'ALL') return true;
-    if (filter === 'ERROR') return upperLog.includes('ERROR');
+    if (filter === 'ERROR') return upperLog.includes('ERROR') || upperLog.includes('FAIL');
     if (filter === 'WARN') return upperLog.includes('WARN');
     if (filter === 'INFO') {
-      // INFO includes explicit INFO, GATE (success), and any non-critical logs
       return (
         upperLog.includes('INFO') || 
         upperLog.includes('GATE') || 
-        (!upperLog.includes('ERROR') && !upperLog.includes('WARN'))
+        (!upperLog.includes('ERROR') && !upperLog.includes('WARN') && !upperLog.includes('FAIL'))
       );
     }
     return true;
@@ -84,30 +83,48 @@ export default function AgentLogViewer() {
           >
             {/* Filter Bar */}
             <div className="flex items-center justify-between px-3 py-2 border-b border-white/5 bg-black/40">
-              <div className="flex items-center gap-2">
-                <Filter size={10} className="text-slate-500" />
-                <span className="text-[8px] font-bold text-slate-500 uppercase tracking-tighter">Filter Level</span>
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-1.5">
+                  <Filter size={10} className="text-slate-500" />
+                  <span className="text-[8px] font-bold text-slate-500 uppercase tracking-tighter">Filter</span>
+                </div>
+                <div className="flex gap-1">
+                  {(['ALL', 'INFO', 'WARN', 'ERROR'] as const).map((level) => {
+                    const isActive = filter === level;
+                    const styles = {
+                      ALL: isActive ? 'bg-slate-500/20 text-slate-200 border-slate-500/40' : 'text-slate-500 hover:text-slate-300',
+                      INFO: isActive ? 'bg-sky-500/20 text-sky-400 border-sky-500/40' : 'text-slate-500 hover:text-sky-400',
+                      WARN: isActive ? 'bg-amber-500/20 text-amber-400 border-amber-500/40' : 'text-slate-500 hover:text-amber-400',
+                      ERROR: isActive ? 'bg-rose-500/20 text-rose-400 border-rose-500/40' : 'text-slate-500 hover:text-rose-400',
+                    };
+                    
+                    return (
+                      <button
+                        key={level}
+                        onClick={() => setFilter(level)}
+                        className={`text-[8px] px-2 py-0.5 rounded transition-all font-bold border ${ 
+                          isActive ? styles[level] : `border-transparent ${styles[level]}`
+                        }`}
+                      >
+                        {level}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-              <div className="flex gap-1">
-                {(['ALL', 'INFO', 'WARN', 'ERROR'] as const).map((level) => (
-                  <button
-                    key={level}
-                    onClick={() => setFilter(level)}
-                    className={`text-[8px] px-2 py-0.5 rounded transition-all font-bold ${ 
-                      filter === level 
-                        ? 'bg-sky-500/20 text-sky-400 border border-sky-500/40 shadow-[0_0_8px_rgba(14,165,233,0.2)]' 
-                        : 'text-slate-500 hover:text-slate-300 hover:bg-white/5 border border-transparent'
-                    }`}
-                  >
-                    {level}
-                  </button>
-                ))}
-              </div>
+              
+              <button 
+                onClick={() => setLogs([])}
+                className="p-1 hover:bg-rose-500/10 text-slate-500 hover:text-rose-400 rounded transition-colors"
+                title="Clear Logs"
+              >
+                <Trash2 size={10} />
+              </button>
             </div>
 
             <div 
               ref={scrollRef}
-              className="h-[calc(100%-36px)] overflow-y-auto p-3 space-y-1.5 font-mono text-[9px] custom-scrollbar"
+              className="h-[calc(100%-36px)] overflow-y-auto p-3 space-y-1 font-mono text-[9px] custom-scrollbar"
             >
               {filteredLogs.length === 0 ? (
                 <div className="h-full flex items-center justify-center opacity-30 italic">
@@ -117,12 +134,12 @@ export default function AgentLogViewer() {
                 filteredLogs.map((log, i) => (
                   <div 
                     key={i} 
-                    className={`group flex gap-2 items-start hover:bg-white/5 p-0.5 rounded transition-colors ${
+                    className={`group flex gap-2 items-start hover:bg-white/5 py-1 px-2 rounded transition-colors ${
                       getLogStyle(log)
                     }`}
                   >
-                    <span className="opacity-40 shrink-0 select-none">
-                      [{new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}]
+                    <span className="opacity-30 shrink-0 select-none font-light">
+                      {new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                     </span>
                     <span className="break-all leading-relaxed">{log}</span>
                   </div>
