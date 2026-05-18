@@ -83,7 +83,7 @@ export default function ContentReviewer() {
     const loadPostContent = async () => {
       setIsLoadingPostContent(true);
       try {
-        const payload = await fetchJson<{ post: WordPressPostSummary }>(
+        const payload = await fetchJson<{ post: WordPressPostSummary }>( 
           `/api/wp/post/${selectedPostId}?siteId=${encodeURIComponent(selectedSiteId)}`,
         );
         const htmlContent = payload.post?.content || '';
@@ -143,6 +143,7 @@ export default function ContentReviewer() {
   };
 
   const copyToClipboard = async (text: string, setter: (val: boolean) => void) => {
+    if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
       setter(true);
@@ -165,6 +166,14 @@ export default function ContentReviewer() {
             className="px-4 py-2 text-sm font-medium liquid-soft hover:liquid-title liquid-pill rounded-xl transition-all"
           >
             Clear
+          </button>
+          <button
+            onClick={() => copyToClipboard(content, setCopiedContent)}
+            disabled={!content.trim()}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium liquid-pill liquid-soft hover:liquid-title transition-all disabled:opacity-50"
+          >
+            {copiedContent ? <Check size={16} className="text-emerald-500" /> : <Copy size={16} />}
+            {copiedContent ? 'Copied' : 'Copy Content'}
           </button>
           <button
             onClick={handleUpdate}
