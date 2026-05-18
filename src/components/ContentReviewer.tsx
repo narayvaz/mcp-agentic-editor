@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { FileText, Sparkles, Wand2, RefreshCw, Globe, Upload } from 'lucide-react';
+import { FileText, Sparkles, Wand2, RefreshCw, Globe, Upload, Copy, Check } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { buildJsonInit, fetchJson } from '../lib/api';
 import { AppConfig, WordPressSiteConfig } from '../types/config';
@@ -26,6 +26,8 @@ export default function ContentReviewer() {
   const [isLoadingPostContent, setIsLoadingPostContent] = useState(false);
   const [error, setError] = useState('');
   const [postsVersion, setPostsVersion] = useState(0);
+  const [copiedContent, setCopiedContent] = useState(false);
+  const [copiedReview, setCopiedReview] = useState(false);
 
   const selectedSite = useMemo<WordPressSiteConfig | null>(() => {
     if (!config) return null;
@@ -105,7 +107,7 @@ export default function ContentReviewer() {
     if (!content.trim()) return;
     setIsReviewing(true);
     try {
-      const payload = await fetchJson<{ review: string }>(
+      const payload = await fetchJson<{ review: string }>( 
         '/api/content/review',
         buildJsonInit('POST', {
           siteId: selectedSiteId || undefined,
@@ -137,6 +139,16 @@ export default function ContentReviewer() {
       setError(String(err));
     } finally {
       setIsReviewing(false);
+    }
+  };
+
+  const copyToClipboard = async (text: string, setter: (val: boolean) => void) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setter(true);
+      setTimeout(() => setter(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy!', err);
     }
   };
 
@@ -241,9 +253,20 @@ export default function ContentReviewer() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 h-[calc(100vh-320px)]">
         <div className="flex flex-col liquid-surface-strong rounded-3xl border overflow-hidden">
-          <div className="p-4 border-b border-white/30 flex items-center gap-2">
-            <FileText size={18} className="liquid-soft" />
-            <span className="text-[10px] font-bold uppercase tracking-widest liquid-soft">Draft Content</span>
+          <div className="p-4 border-b border-white/30 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <FileText size={18} className="liquid-soft" />
+              <span className="text-[10px] font-bold uppercase tracking-widest liquid-soft">Draft Content</span>
+            </div>
+            {content.trim() && (
+              <button
+                onClick={() => copyToClipboard(content, setCopiedContent)}
+                className="p-1.5 hover:bg-white/10 rounded-lg transition-all text-liquid-soft hover:text-white"
+                title="Copy to clipboard"
+              >
+                {copiedContent ? <Check size={16} className="text-emerald-400" /> : <Copy size={16} />}
+              </button>
+            )}
           </div>
           <textarea
             value={content}
@@ -251,12 +274,34 @@ export default function ContentReviewer() {
             placeholder="Select a WordPress post or paste your article here..."
             className="flex-1 p-6 resize-none focus:outline-none liquid-title leading-relaxed font-serif text-lg bg-transparent"
           />
+          {content.trim() && (() => {
+            const words = content.trim().split(/\s+/).filter(Boolean).length;
+            const mins = Math.ceil(words / 200);
+            return (
+              <div className="px-6 pb-3 flex gap-4 text-[10px] font-semibold tracking-wide" style={{ color: '#94a3b8' }}>
+                <span>{words.toLocaleString()} words</span>
+                <span>·</span>
+                <span>~{mins} min read</span>
+              </div>
+            );
+          })()}
         </div>
 
         <div className="flex flex-col liquid-surface-strong rounded-3xl border overflow-hidden">
-          <div className="p-4 border-b border-white/30 flex items-center gap-2">
-            <Sparkles size={18} className="text-sky-600" />
-            <span className="text-[10px] font-bold uppercase tracking-widest liquid-soft">AI Analysis & Suggestions</span>
+          <div className="p-4 border-b border-white/30 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Sparkles size={18} className="text-sky-600" />
+              <span className="text-[10px] font-bold uppercase tracking-widest liquid-soft">AI Analysis & Suggestions</span>
+            </div>
+            {review && (
+              <button
+                onClick={() => copyToClipboard(review, setCopiedReview)}
+                className="p-1.5 hover:bg-white/10 rounded-lg transition-all text-liquid-soft hover:text-white"
+                title="Copy analysis"
+              >
+                {copiedReview ? <Check size={16} className="text-emerald-400" /> : <Copy size={16} />}
+              </button>
+            )}
           </div>
           <div className="flex-1 p-6 overflow-y-auto">
             {review ? (
