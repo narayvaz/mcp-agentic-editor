@@ -42,6 +42,9 @@ jobs:
         # No test exclusions, sandbox fallbacks, or continue-on-error here.
         run: npm run build:release
       - name: Package ad-hoc signed test archives without publishing
+        env:
+          # No signing credentials exist in this job; identity '-' below is ad hoc.
+          CSC_FOR_PULL_REQUEST: 'true'
         run: npx --no-install electron-builder --mac dmg zip --arm64 --publish never -c.mac.identity=-
       - name: Verify the packaged app and the app inside the ZIP
         shell: bash
