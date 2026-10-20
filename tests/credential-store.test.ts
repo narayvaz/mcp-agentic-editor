@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createCredentialStore, CredentialError, type CredentialExecutor } from '../server/credential-store';
+import { createCredentialStore, CredentialError, KEYCHAIN_VALUE_PREFIX, type CredentialExecutor } from '../server/credential-store';
 
 function deferred() {
   let resolve!: (value: string) => void, reject!: (error: unknown) => void;
@@ -90,4 +90,52 @@ test('unsupported platforms refuse configured Keychain reads and new secret stor
   let calls=0;const store=createCredentialStore({platform:'linux',executor:()=>{calls++;throw Error('unreachable');}});
   await assert.rejects(store.resolve('keychain://fake.key'),error=>error instanceof CredentialError&&error.code==='CREDENTIAL_STORAGE_UNAVAILABLE');
   await assert.rejects(store.store('fake.key','fake value'),error=>error instanceof CredentialError&&error.code==='CREDENTIAL_STORAGE_UNAVAILABLE');assert.equal(calls,0);
+});
+
+test('printable versioned values round-trip exact multiline JSON and multilingual text after clearing the cache', async () => {
+  const saved=new Map<string,string>();const writes:string[]=[];let hexadecimalReads=0;
+  const cliOutput=(value:string)=>{if(/[^\x20-\x7e]/.test(value)){hexadecimalReads++;return Buffer.from(value,'utf8').toString('hex')+'\n';}return value+'\n';};
+  const store=createCredentialStore({platform:'darwin',executor:args=>{
+    const account=args[args.indexOf('-a')+1];
+    if(args[0]==='add-generic-password'){const encoded=args[args.indexOf('-w')+1];saved.set(account,encoded);writes.push(encoded);return{promise:Promise.resolve(''),cancel:()=>{}};}
+    return{promise:Promise.resolve(cliOutput(saved.get(account)!)),cancel:()=>{}};
+  }});
+  const values=[JSON.stringify({type:'service_account',client_email:'qa-only@example.invalid',private_key:'-----BEGIN TEST KEY-----\nFAKE ONLY\n-----END TEST KEY-----\n',label:'Հայերեն · Русский'},null,2)+'\n','  Հայերեն\nРусский\nEnglish\t  '];
+  assert.match(cliOutput(values[0]),/^[a-f0-9]+\n$/);hexadecimalReads=0;
+  for(const value of values){
+    const reference=await store.store('fake.multiline',value);
+    assert.equal(await store.resolve(reference),value);
+    store.clearCache();assert.equal(await store.resolve(reference),value);
+  }
+  assert.equal(hexadecimalReads,0);assert.equal(writes.length,values.length);
+  for(const encoded of writes){assert.match(encoded,/^[\x20-\x7e]+$/);assert.ok(encoded.startsWith(`${KEYCHAIN_VALUE_PREFIX}v1:`));}
+});
+
+test('legacy printable credentials including a 64-character hexadecimal VPS token remain unchanged', async () => {
+  const values=['a1'.repeat(32),'0123456789ABCDEF'.repeat(4),'legacy printable password','eyJleGFtcGxlIjoibGVnYWN5In0='];let index=0;
+  const store=createCredentialStore({platform:'darwin',executor:()=>({promise:Promise.resolve(values[index++]+'\n'),cancel:()=>{}})});
+  for(const [i,value] of values.entries())assert.equal(await store.resolve(`keychain://fake.legacy.${i}`),value);
+});
+
+test('malformed reserved wrappers fail closed without returning decoded or encoded secret material', async () => {
+  const secret='PRIVATE_FAKE_SECRET_Հայերեն';const prefix=`${KEYCHAIN_VALUE_PREFIX}v1:`;
+  const encode=(value:string|Buffer)=>Buffer.from(value).toString('base64');
+  let padded=JSON.stringify({version:1,value:secret});while(!encode(padded).endsWith('='))padded=JSON.stringify({version:1,value:JSON.parse(padded).value+'x'});
+  const canonical=encode(padded),alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const position=canonical.search(/=+$/)-1;
+  const noncanonical=canonical.slice(0,position)+alphabet[alphabet.indexOf(canonical[position])+1]+canonical.slice(position+1);
+  assert.deepEqual(Buffer.from(noncanonical,'base64'),Buffer.from(canonical,'base64'));
+  const malformed=[
+    `${KEYCHAIN_VALUE_PREFIX}v2:${encode(padded)}`,`${prefix}%%%${secret}`,prefix+canonical.slice(0,4)+'\n'+canonical.slice(4),`${prefix}${noncanonical}`,
+    prefix+encode(JSON.stringify({version:2,value:secret})),prefix+encode(JSON.stringify({version:1,value:42})),prefix+encode(JSON.stringify({version:1,value:''})),
+    prefix+encode(JSON.stringify({version:1,value:secret,extra:true})),prefix+encode(`{"version":1,"value":"${secret}","value":"duplicate"}`),
+    prefix+encode(JSON.stringify({version:1,value:secret})+' '),prefix+encode(Buffer.concat([Buffer.from('{"version":1,"value":"'),Buffer.from([0xff]),Buffer.from('"}')])),
+    prefix+encode(Buffer.concat([Buffer.from([0xef,0xbb,0xbf]),Buffer.from(padded)])),
+  ];
+  for(const [index,value] of malformed.entries()){
+    const store=createCredentialStore({platform:'darwin',executor:()=>({promise:Promise.resolve(value),cancel:()=>{}})});
+    await assert.rejects(store.resolve(`keychain://fake.malformed.${index}`),error=>{
+      assert.ok(error instanceof CredentialError);assert.equal(error.code,'CREDENTIAL_UNAVAILABLE');assert.ok(!error.message.includes(secret));assert.ok(!error.message.includes(value));assert.ok(!error.message.includes(KEYCHAIN_VALUE_PREFIX));return true;
+    });
+  }
 });
