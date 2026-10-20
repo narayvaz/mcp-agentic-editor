@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {editReadiness,hasMeasuredSearchData,formatSearchMetric,publicHttpUrl,articlePreviewDocument,evidenceOutputLabel,refreshEvidenceDrafts} from '../src/lib/editor-workflows.ts';
+import {editReadiness,hasMeasuredSearchData,formatSearchMetric,publicHttpUrl,articlePreviewDocument,evidenceOutputLabel,refreshEvidenceDrafts,evidenceReceiptDrafts,ownsSelectionResult,canSendAssistantMessage} from '../src/lib/editor-workflows.ts';
 
 const edited = {title:'Changed title',content:'<p>Changed</p>',baseTitle:'Original',baseContent:'<p>Original</p>',expectedRevision:'revision-a'};
 test('search failures and unknown fields never become traffic numbers',()=>{
@@ -55,4 +55,35 @@ test('refresh advances clean records but preserves unsaved local evidence',()=>{
   assert.equal(result.a,dirty);
   assert.equal(result.b.item.title,'New saved state');
   assert.equal(clean.item.title,'Old saved state');
+});
+
+test('a delayed evidence receipt updates its own record without replacing another draft',()=>{
+  const a={item:{id:'a',title:'Saving A'},dirty:true};const b={item:{id:'b',title:'Unsaved B'},dirty:true};
+  const saved={id:'a',title:'Saved A'};
+  const next=evidenceReceiptDrafts({a,b},'a',saved);
+  assert.equal(next.a.item,saved);assert.equal(next.a.dirty,false);assert.equal(next.b,b);
+  assert.equal(a.dirty,true);
+  const created=evidenceReceiptDrafts({new:a,b},'new',saved);
+  assert.equal(created.new,undefined);assert.equal(created.b,b);assert.equal(created.a.item,saved);
+});
+test('late selection-bound results cannot own a different or revisited story',()=>{
+  const origin={key:'a',epoch:1};
+  assert.equal(ownsSelectionResult(origin,{key:'a',epoch:1}),true);
+  assert.equal(ownsSelectionResult(origin,{key:'b',epoch:2}),false);
+  assert.equal(ownsSelectionResult(origin,{key:'a',epoch:3}),false);
+});
+test('a receipt after remount preserves edits made since its submission',()=>{
+  const submitted={id:'a',title:'Submitted A'};
+  const local={item:{id:'a',title:'Newer unsaved A'},dirty:true};
+  const saved={id:'a',title:'Saved A'};
+  assert.equal(evidenceReceiptDrafts({a:local},'a',saved,submitted).a,local);
+  const created=evidenceReceiptDrafts({new:local},'new',saved,submitted);
+  assert.equal(created.new,local);assert.equal(created.a.item,saved);
+});
+test('the assistant send guard rejects archived chats for both clicks and shortcuts',()=>{
+  assert.equal(canSendAssistantMessage('archived','A message',false),false);
+  assert.equal(canSendAssistantMessage(undefined,'A message',false),false);
+  assert.equal(canSendAssistantMessage('active','   ',false),false);
+  assert.equal(canSendAssistantMessage('active','A message',true),false);
+  assert.equal(canSendAssistantMessage('active','A message',false),true);
 });

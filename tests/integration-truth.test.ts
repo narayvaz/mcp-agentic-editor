@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { completedGscWindow, expertRunObservation, normalizeWordPressPost, readVpsStatus, smartRunObservation, unicodeTokens } from '../server/integrations';
 import { observeProduction, observeWordPress, registerObservationRoutes } from '../server/observation';
 import { registerWordPressEditRoutes } from '../server/wordpress-edit';
+import { normalizeTimestamp } from '../shared/timestamps';
+import { formatTime } from '../src/lib/studio';
 
 function fakeApp() {
   const routes = new Map<string, Function>();
@@ -41,6 +43,45 @@ test('Expert and Smart observations use real fields without synthesizing run tim
   const smart = smartRunObservation({ is_running: true, is_stopping: true, daily_count: 3 });
   assert.equal(smart.status, 'stopping'); assert.equal(smart.counts.publishedToday, 3);
   assert.throws(() => expertRunObservation({ status: 'success' }), /Unrecognized/);
+});
+test('source timestamps normalize seconds, milliseconds, fractional seconds, and offset ISO consistently', () => {
+  const expected = '2026-10-20T10:00:22.000Z';
+  for (const value of [1792490422, '1792490422', 1792490422000, '1792490422000', '2026-10-20T14:00:22+04:00', expected]) {
+    assert.equal(normalizeTimestamp(value), expected, String(value));
+    assert.equal(formatTime(value), formatTime(expected));
+  }
+  assert.equal(normalizeTimestamp(1792490422.125), '2026-10-20T10:00:22.125Z');
+});
+test('missing, sentinel, malformed, impossible and out-of-range timestamps stay unknown', () => {
+  for (const value of [undefined, null, '', ' ', 0, '0', -1, '-1792490422', NaN, Infinity, -Infinity, Number.MAX_SAFE_INTEGER,
+    8.64e15 + 1, true, false, [], {}, 'yesterday', '1e9', '2026-02-30T10:00:00Z', '2026-13-01T00:00:00Z', '2026-10-20T24:00:00Z', '2026-10-20T10:60:00Z', '2026-10-20T10:00:00+25:00']) {
+    assert.equal(normalizeTimestamp(value), null, String(value));
+    assert.equal(formatTime(value), 'Unknown', String(value));
+  }
+  assert.equal(normalizeTimestamp('2024-02-29T10:00:00Z'), '2024-02-29T10:00:00.000Z');
+  assert.equal(normalizeTimestamp('2026-10-20T10:00:22'), '2026-10-20T10:00:22');
+  assert.equal(formatTime('2026-10-20T10:00:22'), '2026-10-20 10:00:22 (timezone not reported)');
+});
+test('Expert update time retains the source value and never substitutes the observation receipt time', t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-21T00:00:00Z') });
+  const result = expertRunObservation({ is_running: false, manifest: { finished_at: 0, updated_at: 1792490422, started_at: '2026-10-19T00:00:00Z' } });
+  assert.equal(result.updatedAt, '2026-10-20T10:00:22.000Z');
+  assert.deepEqual(result.updatedAtSource, { field: 'manifest.updated_at', value: 1792490422 });
+  assert.deepEqual(result.receipt, { source: 'vps:/api/expert/status', observedAt: '2026-10-21T00:00:00.000Z' });
+  const missing = expertRunObservation({ is_running: false, manifest: { finished_at: 'invalid', updated_at: 0 } });
+  assert.equal(missing.updatedAt, null);
+  assert.notEqual(missing.updatedAt, missing.receipt.observedAt);
+});
+test('schedule observations return normalized worker updates and retain cached source receipts', async t => {
+  t.mock.method(globalThis, 'fetch', async (url: any) => Response.json(String(url).endsWith('/api/expert/status')
+    ? { is_running: false, manifest: { finished_at: 1792490422 } } : { is_running: false }));
+  const api = fakeApp(); registerObservationRoutes(api.app, { readConfig: () => ({ vps: { baseUrl: 'https://example.com' } }), getGoogleAccessToken: async () => { throw new Error('must not request token'); } });
+  const first = await api.request('get', '/api/automations');
+  const second = await api.request('get', '/api/automations');
+  assert.equal(first.data.items[0].lastRun, '2026-10-20T10:00:22.000Z');
+  assert.equal(first.data.items[1].lastRun, null);
+  assert.deepEqual(second.data.items[0].receipt, first.data.items[0].receipt);
+  assert.equal(second.data.observedAt, first.data.observedAt);
 });
 test('no VPS connection means unavailable observations, never fake scheduled jobs', async () => {
   const result = await observeProduction({ vps: {} }); assert.equal(result.available, false); assert.deepEqual(result.items, []); assert.equal(result.capabilities.trigger, false);

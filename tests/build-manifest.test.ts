@@ -10,7 +10,7 @@ test('rebuilding identical inputs creates a distinct release, while lock and bui
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'azat-manifest-test-'));
   const script=fileURLToPath(new URL('../scripts/create-build-manifest.mjs',import.meta.url));
   try {
-    for(const dir of ['dist','dist-server','dist-electron','src','server','electron','scripts','tests','public']) {
+    for(const dir of ['dist','dist-server','dist-electron','src','server','shared','electron','scripts','tests','public']) {
       fs.mkdirSync(path.join(root,dir));fs.writeFileSync(path.join(root,dir,'fixture.txt'),'same');
     }
     fs.writeFileSync(path.join(root,'package.json'),JSON.stringify({version:'0.2.0'}));
@@ -21,6 +21,8 @@ test('rebuilding identical inputs creates a distinct release, while lock and bui
     fs.writeFileSync(path.join(root,'package-lock.json'),'changed dependency lock');
     const third=build();assert.notEqual(second.sourceHash,third.sourceHash);
     fs.writeFileSync(path.join(root,'vite.config.ts'),'changed build configuration');
-    assert.notEqual(third.sourceHash,build().sourceHash);
+    const fourth=build();assert.notEqual(third.sourceHash,fourth.sourceHash);
+    fs.writeFileSync(path.join(root,'shared','fixture.txt'),'changed shared input');
+    assert.notEqual(fourth.sourceHash,build().sourceHash);
   } finally {fs.rmSync(root,{recursive:true,force:true});}
 });

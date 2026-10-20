@@ -28,3 +28,18 @@ export function refreshEvidenceDrafts<T extends {id?: string}>(drafts: Record<st
   for (const record of incoming) if (record.id && next[record.id] && !next[record.id].dirty) next[record.id] = {item: record, dirty: false};
   return next;
 }
+
+export function evidenceReceiptDrafts<T extends {id?: string}>(drafts: Record<string, {item: T; dirty: boolean}>, originKey: string, saved: T, submitted?: T) {
+  if (!saved.id) throw new Error('A saved evidence record ID is required.');
+  const next = {...drafts};
+  const editedSinceSubmission = submitted && drafts[originKey]?.dirty && JSON.stringify(drafts[originKey].item) !== JSON.stringify(submitted);
+  if (originKey !== saved.id && !editedSinceSubmission) delete next[originKey];
+  if (originKey !== saved.id || !editedSinceSubmission) next[saved.id] = {item: saved, dirty: false};
+  return next;
+}
+export function ownsSelectionResult(origin: {key: string; epoch: number}, current: {key: string; epoch: number}) {
+  return origin.key === current.key && origin.epoch === current.epoch;
+}
+export function canSendAssistantMessage(status: string | undefined, prompt: string, busy: boolean) {
+  return status === 'active' && Boolean(prompt.trim()) && !busy;
+}

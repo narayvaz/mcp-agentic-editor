@@ -1,4 +1,5 @@
 import { publicHttpUrl } from './editor-workflows';
+import { normalizeTimestamp } from '../../shared/timestamps';
 import React, { createContext, useContext, useEffect, useState } from 'react';
 
 export interface StorySelection {
@@ -21,7 +22,12 @@ export function StudioProvider({ children }: {children: React.ReactNode}) {
 }
 export function useStudio() { return useContext(StudioContext); }
 export function stripMarkup(value: string = '') { const doc = new DOMParser().parseFromString(value, 'text/html'); return doc.body.textContent || ''; }
-export function formatTime(value?: string | null) { if (!value) return 'Not recorded'; const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleString([], {timeZone:'Asia/Yerevan', dateStyle:'medium', timeStyle:'short'}); }
+export function formatTime(value?: unknown) {
+  const normalized = normalizeTimestamp(value);
+  if (!normalized) return 'Unknown';
+  if (!normalized.endsWith('Z')) return `${normalized.replace('T', ' ')} (timezone not reported)`;
+  return new Date(normalized).toLocaleString([], {timeZone:'Asia/Yerevan', dateStyle:'medium', timeStyle:'short'});
+}
 export async function request<T = any>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init); const contentType = response.headers.get('content-type') || '';
   if (!contentType.includes('application/json')) throw new Error(`This capability is not available from the running backend (HTTP ${response.status}).`);

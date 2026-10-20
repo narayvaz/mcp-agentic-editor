@@ -40,34 +40,38 @@ Record the exact build ID, source commit, macOS version, tester, date, and resul
 
 The automated suite covers many of these boundaries, but an unattended packaging result is not a record of native UI acceptance. Until that record exists, leave the GitHub release as a draft prerelease.
 
-### Native UI acceptance matrix — all pending
+### Native UI acceptance matrix — partial checks recorded
+
+A 20 October 2026 review installed the 0.2.0 candidate and confirmed packaged identity, retained conversations and unsaved Settings across navigation. A separate origin served the actual frontend with clearly marked, stateful QA-only APIs; fixture results below establish UI behavior only. No production WordPress saves or model requests were made by those UI checks. A later live observer refresh failed despite a successful isolated read-only SSH check; native integration acceptance remains open.
 
 The review must cover every view in the five main areas and Development lab, including every enabled button, form, menu, link, disclosure, and Assistant action. An attractive screenshot or one successful route does not complete an area. Inventory each control against the exact build, record its intended effect and observed result, and verify any disabled control explains what is missing. Use fixtures or test services for actions; production writes require their own authorization.
 
 | Area | Views and essential coverage | Acceptance status |
 | --- | --- | --- |
-| Work | Overview and Article review; selection, refresh, review controls, editable fields, draft persistence and restoration | Pending |
-| Evidence | Story records; create/open/search/select, source links, evidence fields, provenance and freshness | Pending |
-| Production | Runs & outputs and Schedules; current/empty/unavailable runs, output links, schedule forms and truthful availability of actions | Pending |
-| Audience | Search performance; site/date controls, refresh, data freshness, unavailable credentials and empty results | Pending |
-| System | Health, Connections, Editorial rules, Activity and Guide; every connection/rule form, masking, validation, persistence, history and documentation links | Pending |
-| Development lab | Prompt recipes, Code workshop and Experiments; all recipe/proposal controls, immutable approval, staging, stop/cancel, conflicts and operator handoff | Pending |
-| Shared interface | Main/subnavigation, selected-story context, Assistant toggle and close, all Assistant controls, overlays, notifications and external links | Pending |
+| Work | Overview and Article review; selection, refresh, review controls, editable fields, draft persistence and restoration | Partial: multilingual editing, isolated preview, before/after preflight, cancel, fixture save receipt, stale-revision block and draft preservation across navigation/reload observed. |
+| Evidence | Story records; create/open/select, source links, evidence fields, provenance and freshness | Partial: create/source/claim validation, save, language output, delayed output selection and delayed conflict isolation observed. Correction/recovery and full retained-output interaction remain pending. |
+| Production | Runs & outputs and Schedules; current/empty/unavailable runs, output links and truthful availability of actions | Partial: real observer initially returned data; a subsequent native refresh failed and requires diagnosis. Fixture views, readable source times and unavailable executor controls observed. |
+| Audience | Search performance; refresh, data freshness, unavailable credentials and empty results | Partial: fixture reporting, opportunities, injected unavailable state and successful retry observed. Final native reporting check remains pending. |
+| System | Health, Connections, Editorial rules, Activity and Guide; connection/rule forms, masking, validation, persistence, history and documentation | Partial: redacted native settings, unsaved navigation retention/revert; fixture discard, add/remove/save site, SSH/HTTPS fields, staged rule save, activity filter and Guide observed. Not every connection/update control accepted. |
+| Development lab | Prompt recipes, Code workshop and Experiments; recipe/proposal controls, immutable approval, staging, stop/cancel, conflicts and operator handoff | Partial: local recipe create/edit and fixture response; proposal preparation, exact-review checkbox, disabled validation until consent and simulated validation handoff observed. Actual isolation is covered separately by host tests. |
+| Shared interface | Main/subnavigation, selected-story context, Assistant toggle and close, Assistant controls, overlays, notifications and external links | Partial: navigation, context opt-out, fixture response, Stop feedback, overlay keyboard entry/Tab wrap/Escape return, mobile navigation priority and resize recovery observed. Archive shortcut retest, attachments and full external-link coverage pending. |
 
 For **every enabled control and form**, exercise loading, empty, failure, conflict, cancel and success states wherever applicable. Record a reason when a state cannot apply. Check duplicate clicks, stale results, validation errors, safe retry, cancellation during work, truthful completion feedback and state after relaunch. A missing integration must produce an actionable unavailable state rather than a fabricated success.
 
-Review keyboard-only operation, visible focus, logical tab order, focus entry/return for overlays, Escape/close behavior, and usable screen-reader names and state announcements with macOS VoiceOver. Explicitly test dirty Settings when navigating between views, saving and discarding; article draft restoration after navigation/relaunch; and Assistant opening/closing and the keyboard toggle while work or an unsaved form is active. These checks are **pending**.
+Review keyboard-only operation, visible focus, logical tab order, focus entry/return for overlays, Escape/close behavior, and usable screen-reader names and state announcements with macOS VoiceOver. Explicitly test dirty Settings when navigating between views, saving and discarding; article draft restoration after navigation/relaunch; and Assistant opening/closing and the keyboard toggle while work or an unsaved form is active. Only the explicitly recorded checks above have passed; VoiceOver and complete keyboard-only acceptance remain **pending**.
 
 | Desktop viewport in CSS pixels | Reflow and interaction status |
 | --- | --- |
-| 320 × 800 | Pending |
-| 390 × 844 | Pending |
-| 768 × 1024 | Pending |
-| 1024 × 768 | Pending |
-| 1200 × 800 | Pending |
-| 1440 × 900 | Pending |
+| 320 × 800 | Connections: no document/main horizontal overflow observed. Other view/zoom coverage pending. |
+| 390 × 700 | Connections reflow and mobile navigation over assistant observed. Full matrix pending. |
+| 721 × 500 | Connections reflow and compact assistant screenshot reviewed. |
+| 800 × 950 | Connections reflow; widening clears mobile-nav main-content lock. |
+| 768 × 1024 | Connections: no document/main horizontal overflow observed. Full matrix pending. |
+| 1024 × 768 | Connections: no document/main horizontal overflow observed. Full matrix pending. |
+| 1200 × 800 | Native launch and fixture core flows observed. Complete view/zoom matrix pending. |
+| 1440 × 900 | Connections: no document/main horizontal overflow observed. Full matrix pending. |
 
-At each size, review every view with Assistant both closed and open, long Armenian/Russian/English text, empty/error/loading content, and **200% zoom**. Confirm forms and action bars fit, navigation remains reachable, focus stays visible, overlays remain dismissible, and scrolling does not trap essential controls. Record any minimum-window limitation explicitly and repeat at the smallest supported native height. The narrower sizes are desktop layout/reflow tests, including emulated content widths if the native window cannot shrink that far; they do **not** establish support on real mobile devices or mobile operating systems. All viewport/zoom acceptance remains pending until observed and recorded.
+At each size, review every view with Assistant both closed and open, long Armenian/Russian/English text, empty/error/loading content, and **200% zoom**. Confirm forms and action bars fit, navigation remains reachable, focus stays visible, overlays remain dismissible, and scrolling does not trap essential controls. Record any minimum-window limitation explicitly and repeat at the smallest supported native height. The narrower sizes are desktop layout/reflow tests, including emulated content widths if the native window cannot shrink that far; they do **not** establish support on real mobile devices or mobile operating systems. The recorded partial checks do not complete this matrix; 200% zoom, every-view states and actual mobile operating systems remain unverified.
 
 ## One-time migration and retained rollback
 

@@ -54,3 +54,20 @@ test('evidence saves preserve revisions, reject stale edits and mark dependent o
     assert.equal(fs.readFileSync(path.join(root,'evidence.json'),'utf8'),'invalid');
   }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
+test('translated outputs preserve the source record language and evidence revision across editions',()=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'azat-evidence-languages-'));
+  try{
+    const store=new EvidenceStore(path.join(root,'evidence.json'));
+    const record=store.create({title:'Ի՞նչ է փոխվել',summary:'Աղբյուրի հայերեն համատեքստը',language:'hy',sources:[{id:'source',title:'Original document',url:'https://example.org/document',excerpt:'Retained source passage.'}],claims:[{id:'claim',text:'Unresolved source claim.',status:'unverified',sourceIds:['source']}]});
+    const english=store.update(record.id,{expectedRevision:record.revision,format:'article',language:'en',text:'English dependent draft.',summary:'Output request must not replace source context.'},'output');
+    assert.equal(english.language,'hy');assert.equal(english.summary,record.summary);assert.equal(english.evidenceRevision,record.evidenceRevision);assert.equal(english.revision,record.revision+1);
+    assert.equal(english.outputs[0].language,'en');assert.equal(english.outputs[0].text,'English dependent draft.');assert.equal(english.revisions.at(-1)?.snapshot.language,'hy');
+    assert.deepEqual(english.sources,record.sources);assert.deepEqual(english.claims,record.claims);
+    const russian=store.update(record.id,{expectedRevision:english.revision,format:'script',language:'ru',text:'Русский зависимый черновик.'},'output');
+    const retained=new EvidenceStore(path.join(root,'evidence.json')).get(record.id);
+    assert.equal(retained.language,'hy');assert.equal(retained.evidenceRevision,1);assert.deepEqual(retained.outputs.map(output=>[output.language,output.status]),[['en','current'],['ru','current']]);
+    assert.equal(russian.revisions.at(-1)?.snapshot.language,'hy');
+    const edited=store.update(record.id,{expectedRevision:russian.revision,language:'ru'});
+    assert.equal(edited.language,'ru');assert.equal(edited.evidenceRevision,2);assert.ok(edited.outputs.every(output=>output.status==='needs-review'));
+  }finally{fs.rmSync(root,{recursive:true,force:true});}
+});

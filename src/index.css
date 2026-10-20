@@ -6,3 +6,72 @@
 @media(max-width:950px){.studio-sidebar{width:160px;padding-left:8px;padding-right:8px}.assistant-dock{width:310px;min-width:290px}.story-context{padding-left:18px;padding-right:18px}.context-label{display:none}.workspace-content{padding:20px}.record-layout{grid-template-columns:1fr}.record-list{grid-template-columns:repeat(2,minmax(0,1fr))}.form-grid,.split-grid{grid-template-columns:1fr}.metrics-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.feature-grid{grid-template-columns:1fr}.page-title{flex-wrap:wrap}.studio-brand{margin-left:7px;margin-right:5px}}
 @media(max-width:720px){.mobile-menu{display:inline-flex}.studio-sidebar{position:fixed;top:0;bottom:0;left:0;width:220px;transform:translateX(-100%)}.studio-sidebar.is-open{transform:translateX(0)}.sidebar-backdrop{display:block;position:fixed;inset:0;z-index:19;background:#152e3870;border:0}.studio-brand{justify-content:space-between}.studio-topbar{padding:0 15px;height:55px}.subnav{padding:0 15px;gap:18px}.workspace-content{padding:18px}.assistant-dock{position:fixed;inset:55px 0 0 auto;width:min(94vw,400px);z-index:30;box-shadow:-10px 0 30px #15364325}.record-list{grid-template-columns:1fr}.diff-grid{grid-template-columns:1fr}.story-context{padding:8px 14px}.story-context strong{max-width:50vw}.metrics-grid{gap:8px}.metric{padding:14px}.page-title h1{font-size:23px}.panel{padding:17px}kbd{display:none}.form-grid{grid-template-columns:1fr}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+
+/* Keep every control reachable when the native window becomes narrow or short. */
+.studio-sidebar{min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;scrollbar-width:thin}
+.studio-sidebar>nav,.studio-brand,.sidebar-label,.sidebar-bottom{flex-shrink:0}
+.page-stack,.source-card,.claim-row,.receipt-list,.receipt,.form-grid,.section-space{min-width:0;max-width:100%}
+.page-stack{width:100%}
+.record-layout>*,.split-grid>*,.diff-grid>*,.metrics-grid>*{min-width:0}
+.panel-header,.preview-bar,.record-meta{flex-wrap:wrap}
+.panel-header,.preview-bar{align-items:flex-start}
+.panel-header>*,.preview-bar>*,.actions>*{min-width:0;max-width:100%}
+.panel-header h2,.panel-header h3,.record-button strong,.metric-value,.local-note,.panel-subtitle,.receipt p{overflow-wrap:anywhere}
+.btn,.text-btn{max-width:100%;white-space:normal;overflow-wrap:anywhere;text-align:center}
+.badge{max-width:100%;white-space:normal;overflow-wrap:anywhere}
+.field,.field>input,.field>select,.field>textarea{min-width:0;max-width:100%;width:100%}
+.table-wrap{min-width:0;max-width:100%}
+.topbar-title{min-width:0}
+.topbar-title strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.studio-topbar .btn{flex-shrink:0;white-space:nowrap}
+.story-context strong{min-width:0;flex:1}
+.assistant-backdrop{display:none}
+.assistant-root{min-height:0;overflow:hidden}
+.assistant-head,.assistant-context,.assistant-composer{flex-shrink:0;min-width:0}
+.assistant-messages{min-height:48px;flex:1 1 90px;overscroll-behavior:contain}
+.assistant-head{overflow-y:auto;max-height:28%}
+.assistant-context{overflow-y:auto;max-height:22%}
+.assistant-composer{overflow-y:auto;max-height:50%;overscroll-behavior:contain}
+.assistant-head .panel-header{align-items:center}
+@media(max-width:1150px){
+ .assistant-backdrop{display:block;position:fixed;inset:62px 0 0;z-index:29;border:0;background:#15364326;cursor:default}
+ .assistant-dock{position:fixed;inset:62px 0 0 auto;width:min(390px,calc(100vw - 24px));min-width:0;z-index:30;box-shadow:-10px 0 30px #15364325}
+ .with-assistant .workspace-content{width:100%}
+}
+@media(max-width:720px){
+ .studio-sidebar{z-index:50}
+ .sidebar-backdrop{z-index:49}
+ .assistant-dock,.assistant-backdrop{top:55px}
+ .assistant-dock{width:min(390px,calc(100vw - 16px))}
+ .studio-topbar{gap:10px}
+ .panel-header .actions{width:100%}
+ .record-meta{gap:6px}
+}
+@media(max-height:650px){
+ .studio-sidebar{padding-top:16px;padding-bottom:12px}
+ .studio-brand{margin-bottom:20px}
+ .area-link{padding-top:10px;padding-bottom:10px}
+ .sidebar-note{margin-top:12px;margin-bottom:10px}
+ .assistant-head{padding:9px 12px;max-height:25%}
+ .assistant-context{padding:6px 12px;max-height:20%}
+ .assistant-messages{padding:10px 12px;gap:10px;min-height:48px}
+ .assistant-message{padding:9px;font-size:12px}
+ .assistant-empty{padding:8px 3px}
+ .assistant-composer{padding:8px 12px;max-height:48%}
+ .assistant-composer textarea{min-height:52px;height:58px;max-height:90px}
+ .assistant-controls{gap:5px;margin-top:5px}
+ .assistant-composer .actions{gap:6px}
+ .assistant-composer .btn{padding:6px 10px}
+}
+@media(max-height:450px){
+ .assistant-head{max-height:23%;padding:7px 10px}
+ .assistant-context{max-height:15%;padding:5px 10px}
+ .assistant-composer{max-height:46%;padding:6px 10px}
+ .assistant-messages{min-height:40px;flex-basis:40px}
+ .assistant-composer textarea{min-height:42px;height:46px;max-height:65px}
+}
+
+@media(max-width:720px){
+ .studio-sidebar{visibility:hidden}
+ .studio-sidebar.is-open{visibility:visible}
+}

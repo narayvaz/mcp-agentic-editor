@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
+import { normalizeTimestamp } from '../shared/timestamps';
 
 export function unicodeTokens(text: string, minimumLength = 3): string[] {
   return [...new Set((text.normalize('NFKC').toLocaleLowerCase().match(/[\p{L}\p{M}\p{N}]+/gu) ?? []).filter(word => [...word].length >= minimumLength))];
@@ -50,6 +51,41 @@ except Exception:
 `;
 const shellQuoteConstant = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
 
+/** Return only fixed descriptions and allowlisted process metadata, never raw SSH output or Error.message. */
+export function classifySshFailure(error: { code?: unknown; signal?: unknown; killed?: unknown } | null, stderr: unknown = ''): string {
+  const diagnostic = typeof stderr === 'string' ? stderr.slice(0, 16_384) : '';
+  const knownCodes = new Set(['EACCES', 'EPERM', 'ENOENT', 'ENOTDIR', 'ETIMEDOUT', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER']);
+  const knownSignals = new Set(['SIGTERM', 'SIGKILL', 'SIGABRT', 'SIGINT', 'SIGHUP', 'SIGSEGV', 'SIGPIPE', 'SIGQUIT', 'SIGBUS']);
+  const code = typeof error?.code === 'string' && knownCodes.has(error.code) ? error.code : typeof error?.code === 'number' && Number.isInteger(error.code) && error.code >= -4096 && error.code <= 255 ? String(error.code) : 'unreported';
+  const signal = typeof error?.signal === 'string' && knownSignals.has(error.signal) ? error.signal : null;
+  const metadata = ` [code=${code}${signal ? `; signal=${signal}` : ''}${error?.killed === true ? '; killed=true' : ''}]`;
+  let message: string;
+  if (error?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' || /Status response exceeds size limit/.test(diagnostic)) {
+    message = 'SSH status response exceeded the configured output limit. Inspect the service status payload size; no complete observation was returned.';
+  } else if (/Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED/i.test(diagnostic)) {
+    message = 'SSH host verification failed. Verify the server identity and its saved known-host entry through a trusted SSH session.';
+  } else if (error?.code === 'EACCES' || error?.code === 'EPERM' || /Operation not permitted|(?:Load key|identity file)[^\r\n]{0,1000}:\s*Permission denied/i.test(diagnostic)) {
+    message = 'The operating system denied SSH or identity-file access. Check Azat Studio’s Files & Folders access and the configured identity’s file permissions.';
+  } else if (/Permission denied/i.test(diagnostic)) {
+    message = 'SSH authentication was rejected. Confirm the configured identity is readable by Azat Studio and authorized for the server.';
+  } else if (error?.code === 'ENOTFOUND' || error?.code === 'EAI_AGAIN' || /Could not resolve hostname/i.test(diagnostic)) {
+    message = 'SSH could not resolve the configured host. Check the saved SSH alias and DNS in the application’s launch environment.';
+  } else if (error?.code === 'ETIMEDOUT' || /Connection timed out|Operation timed out/i.test(diagnostic)) {
+    message = 'SSH connection timed out. Check the configured host and server reachability from this device.';
+  } else if (error?.code === 'ECONNREFUSED' || /Connection refused/i.test(diagnostic)) {
+    message = 'The SSH connection was refused. Check the server’s SSH service and configured port.';
+  } else if (error?.code === 'EHOSTUNREACH' || error?.code === 'ENETUNREACH' || /No route to host|Network is unreachable/i.test(diagnostic)) {
+    message = 'SSH could not reach the server. Check network access and routing from the application’s launch environment.';
+  } else if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') {
+    message = 'The SSH process could not start. Check the system SSH executable and the application’s working directory.';
+  } else if (error?.killed === true || signal) {
+    message = 'The SSH status reader was terminated before returning a complete observation. Check whether the bounded read timed out or the process was interrupted.';
+  } else {
+    message = 'SSH status read failed without a recognized diagnostic. Compare the installed application’s launch permissions, SSH identity access and known-host configuration with the working shell connection.';
+  }
+  return message + metadata;
+}
+
 export async function readVpsStatus(config: VpsReadConfig, relativePath: string): Promise<any> {
   if (!READ_ONLY_VPS_PATHS.has(relativePath)) throw new Error('This route has no verified read-only VPS adapter.');
   if (config.transport === 'ssh') {
@@ -57,8 +93,8 @@ export async function readVpsStatus(config: VpsReadConfig, relativePath: string)
     if (!config.sshIdentityPath || !config.sshIdentityPath.startsWith('/')) throw new Error('Configure the absolute SSH identity path for the status reader.');
     return new Promise((resolve, reject) => {
       const child = execFile('/usr/bin/ssh', ['-i', config.sshIdentityPath!, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'StrictHostKeyChecking=yes', 'my-vps', `python3 -c ${shellQuoteConstant(SSH_READER)}`],
-        { timeout: 25_000, maxBuffer: 2_100_000, encoding: 'utf8' }, (error, stdout) => {
-          if (error) return reject(new Error('SSH status connection failed. Check the configured identity and known host.'));
+        { timeout: 25_000, maxBuffer: 2_100_000, encoding: 'utf8' }, (error, stdout, stderr) => {
+          if (error) return reject(new Error(classifySshFailure(error, stderr)));
           try {
             const result = JSON.parse(stdout);
             if (result?._transportError) return reject(new Error(`${result._transportError}${result.httpStatus ? ` (HTTP ${result.httpStatus})` : ''}.`));
@@ -80,9 +116,12 @@ export async function readVpsStatus(config: VpsReadConfig, relativePath: string)
 export function expertRunObservation(payload: any) {
   if (typeof payload?.is_running !== 'boolean' || !payload.manifest || typeof payload.manifest !== 'object') throw new Error('Unrecognized Expert status response.');
   const manifest = payload.manifest;
+  const reportedTimes = ['finished_at', 'updated_at', 'started_at'].map(field => ({ field: `manifest.${field}`, value: manifest[field], normalized: normalizeTimestamp(manifest[field]) }));
+  const reportedTime = reportedTimes.find(time => time.normalized !== null) ?? reportedTimes.find(time => time.value !== null && time.value !== undefined);
   return { id: 'expert', name: 'Expert', status: payload.is_paused ? 'paused' : payload.is_running ? 'running' : String(manifest.status ?? 'idle'),
     stage: typeof manifest.mode === 'string' ? manifest.mode : typeof manifest.stage === 'string' ? manifest.stage : null,
-    updatedAt: manifest.finished_at ?? manifest.updated_at ?? manifest.started_at ?? null, logs: [],
+    updatedAt: reportedTime?.normalized ?? null,
+    updatedAtSource: reportedTime ? { field: reportedTime.field, value: reportedTime.value } : null, logs: [],
     counts: { topics: payload.topic_count ?? null, selected: payload.selected_count ?? null, approved: payload.approved_count ?? null, contextReady: manifest.context_ready ?? null, needsReview: manifest.needs_review ?? null },
     receipt: { source: 'vps:/api/expert/status', observedAt: new Date().toISOString() } };
 }

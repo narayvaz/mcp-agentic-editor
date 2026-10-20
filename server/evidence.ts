@@ -106,7 +106,8 @@ export class EvidenceStore {
     if (!Number.isInteger(input.expectedRevision)) throw new EvidenceError('expectedRevision is required.', 428);
     if (input.expectedRevision !== current.revision) throw new EvidenceError('This record changed. Review the current revision before saving.', 409, current);
     const reason = kind === 'correction' ? text(input.reason, 5000, 'Correction reason', true) : text(input.reason ?? (kind === 'output' ? 'Local output retained.' : 'Editorial record updated.'), 5000, 'reason', true);
-    const snapshot = validateSnapshot(input, current);
+    // Output metadata describes a dependent draft, not a change to its source record.
+    const snapshot = validateSnapshot(kind === 'output' ? current : input, current);
     const evidenceRevision = kind === 'output' ? current.evidenceRevision || current.revision : (current.evidenceRevision || current.revision) + 1;
     if (kind !== 'output') snapshot.outputs = snapshot.outputs.map(output => ({ ...output, status: 'needs-review' }));
     if (kind === 'correction') snapshot.status = 'corrected';
