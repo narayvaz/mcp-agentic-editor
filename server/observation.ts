@@ -1,6 +1,7 @@
 import type { Express } from 'express';
 import { createHash } from 'node:crypto';
 import { completedGscWindow, expertRunObservation, readVpsStatus, smartRunObservation } from './integrations';
+import { withReadDeadline } from '../shared/deadline';
 
 type Dependencies = { readConfig: () => any; getGoogleAccessToken: (config: any, scopes: string[]) => Promise<string>; resolveVpsConfig?: (config: any) => Promise<any> };
 export async function observeWordPress(site: any) {
@@ -21,16 +22,19 @@ export async function observeWordPress(site: any) {
   } catch { return { site: site.name || site.baseUrl, siteUrl: site.baseUrl, status: 'unreachable', lastCheck: observedAt, metrics: [], performance: { score: null, responseTime: null, uptime: null }, error: 'WordPress REST API could not be reached.' }; }
 }
 
-export async function observeProduction(config: any, resolveVpsConfig?: Dependencies['resolveVpsConfig']) {
+export async function observeProduction(config: any, resolveVpsConfig?: Dependencies['resolveVpsConfig'], options: { readStatus?: typeof readVpsStatus; timeoutMs?: number } = {}) {
   const vps = config.vps ?? {};
   const observedAt = new Date().toISOString();
   const capabilities = { observe: true, trigger: false, stop: false };
   if (!vps.baseUrl && vps.transport !== 'ssh') return { available: false, source: 'not-configured', observedAt, items: [], capabilities, note: 'Configure HTTPS or the verified SSH connection to observe Expert and Smart.' };
   const resolvedVps = Promise.resolve().then(() => resolveVpsConfig ? resolveVpsConfig(vps) : vps);
-  const outcomes = await Promise.allSettled([
-    resolvedVps.then(resolved => readVpsStatus(resolved, '/api/expert/status')).then(expertRunObservation),
-    resolvedVps.then(resolved => readVpsStatus(resolved, '/api/smart_status')).then(smartRunObservation),
-  ]);
+  const readStatus = options.readStatus ?? readVpsStatus;
+  const worker = (name: string, route: string, normalize: (payload: any) => any) => withReadDeadline(async signal => {
+    const resolved = await resolvedVps;
+    if (signal.aborted) throw signal.reason;
+    return normalize(await readStatus(resolved, route));
+  }, options.timeoutMs ?? 30_000, `${name} status observation timed out. No complete observation was returned; refresh to retry.`);
+  const outcomes = await Promise.allSettled([worker('Expert', '/api/expert/status', expertRunObservation), worker('Smart', '/api/smart_status', smartRunObservation)]);
   const items = outcomes.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
   const errors = outcomes.flatMap((result, index) => result.status === 'rejected' ? [{ id: index === 0 ? 'expert' : 'smart', error: result.reason instanceof Error ? result.reason.message : 'Status unavailable.' }] : []);
   return { available: items.length > 0, source: items.length ? 'vps' : 'vps-error', transport: vps.transport === 'ssh' ? 'ssh' : 'https', observedAt, items, capabilities, errors,
@@ -51,12 +55,15 @@ export function registerObservationRoutes(app: Express, dependencies: Dependenci
     const health = await observeWordPress(config.wordpressSites.find((site: any) => site.id === config.activeSiteId) ?? config.wordpressSites[0]);
     res.json({ status: health.status === 'healthy' ? 'ok' : 'warning', source: 'wordpress-rest', siteUrl: health.siteUrl ?? null, observedAt: health.lastCheck, issues: health.status === 'healthy' ? [] : [{ id: 'wp-rest', type: 'integration', message: health.error ?? 'REST response is unverified.', severity: 'high' }], scope: 'REST reachability only' });
   });
-  app.get('/api/production/status', async (_req, res) => { res.json(await production()); });
-  app.get('/api/pipeline/status', async (_req, res) => { res.json(await production()); });
-  app.get('/api/automations', async (_req, res) => {
+  const respondProduction = async (res: any, schedules = false) => {
+    try {
     const observed = await production();
-    res.json({ ...observed, items: observed.items.map((item: any) => ({ ...item, type: 'vps', lastRun: item.updatedAt, cron: null, readOnly: true })), note: 'Existing pipeline observations. No local scheduler is installed; schedule and trigger controls are unavailable.' });
-  });
+    res.json(schedules ? { ...observed, items: observed.items.map((item: any) => ({ ...item, type: 'vps', lastRun: item.updatedAt, cron: null, readOnly: true })), note: 'Existing pipeline observations. No local scheduler is installed; schedule and trigger controls are unavailable.' } : observed);
+    } catch { res.status(503).json({ ok: false, available: false, error: 'Production status could not be read. Refresh to retry.' }); }
+  };
+  app.get('/api/production/status', async (_req, res) => { await respondProduction(res); });
+  app.get('/api/pipeline/status', async (_req, res) => { await respondProduction(res); });
+  app.get('/api/automations', async (_req, res) => { await respondProduction(res, true); });
   const unavailable = (_req: any, res: any) => res.status(501).json({ ok: false, available: false, error: 'No verified executor is registered. Use the existing Azat dashboard for production controls.', capabilities: { trigger: false, stop: false, publish: false } });
   app.post('/api/automations', unavailable); app.put('/api/automations/:id', unavailable); app.delete('/api/automations/:id', unavailable);
   app.get('/api/automations/:id/trigger', unavailable); app.post('/api/pipeline/start_stage', unavailable); app.post('/api/pipeline/stop', unavailable);

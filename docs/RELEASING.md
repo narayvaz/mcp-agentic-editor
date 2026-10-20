@@ -81,6 +81,12 @@ At each size, review every view with Assistant both closed and open, long Armeni
 
 An enlarged native Production view with Assistant open was observed after Actual Size followed by five Zoom In actions. The exact zoom percentage was not measured. This is one observed view, not completion of the 200% matrix. Every-view zoom/state coverage, VoiceOver, complete keyboard/control coverage, export download receipts and actual mobile operating systems remain unverified.
 
+### Bounded production reads
+
+Production status reads settle independently of transport callbacks. The SSH reader has a 25-second hard deadline and releases its owned process/streams; HTTPS status includes a 15-second deadline through JSON-body reading. Each worker observation has a 30-second bound, so a missing worker cannot hide a successful worker receipt. Cached failures can be retried. The three Production/Schedules GET routes have a 40-second frontend deadline; writes and AI workflows retain their existing behavior. A timeout does not claim that remote work was cancelled.
+
+The additional gate passed 112 application tests and five asset tests, including never-answering helpers, late callbacks, pipe errors, stalled bodies, partial worker success and successful retry. This closes an indefinite-wait gap found during review; the exact cause of the earlier native stall has not been established. Its checked complete bundle is staged separately from the installed credential-fix build. Native activation and final observer acceptance still require the workstation to be unlocked.
+
 ## One-time migration and retained rollback
 
 The existing 0.1.16 installation is ad-hoc signed with a binary-specific designated requirement. A newly built ad-hoc app does not satisfy that requirement. Squirrel.Mac may reject it even when its checksum is correct. Do not disable signature verification to force an upgrade.

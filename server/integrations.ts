@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { normalizeTimestamp } from '../shared/timestamps';
+import { withReadDeadline } from '../shared/deadline';
 
 export function unicodeTokens(text: string, minimumLength = 3): string[] {
   return [...new Set((text.normalize('NFKC').toLocaleLowerCase().match(/[\p{L}\p{M}\p{N}]+/gu) ?? []).filter(word => [...word].length >= minimumLength))];
@@ -86,14 +87,25 @@ export function classifySshFailure(error: { code?: unknown; signal?: unknown; ki
   return message + metadata;
 }
 
-export async function readVpsStatus(config: VpsReadConfig, relativePath: string): Promise<any> {
+type SshProcess = { kill: (signal: 'SIGKILL') => unknown; stdin?: { end: (data: string) => unknown; destroy: () => unknown; on: (event: 'error', listener: (error: Error) => void) => unknown } | null; stdout?: { destroy: () => unknown } | null; stderr?: { destroy: () => unknown } | null };
+export type SshStatusExecutor = (file: string, args: string[], options: { timeout: number; killSignal: 'SIGKILL'; maxBuffer: number; encoding: 'utf8' }, callback: (error: any, stdout: string, stderr: string) => void) => SshProcess;
+export async function readVpsStatus(config: VpsReadConfig, relativePath: string, options: { sshExecutor?: SshStatusExecutor; timeoutMs?: number } = {}): Promise<any> {
   if (!READ_ONLY_VPS_PATHS.has(relativePath)) throw new Error('This route has no verified read-only VPS adapter.');
   if (config.transport === 'ssh') {
     if ((config.sshHost ?? 'my-vps') !== 'my-vps') throw new Error('Only the verified my-vps SSH alias is supported.');
     if (!config.sshIdentityPath || !config.sshIdentityPath.startsWith('/')) throw new Error('Configure the absolute SSH identity path for the status reader.');
-    return new Promise((resolve, reject) => {
-      const child = execFile('/usr/bin/ssh', ['-i', config.sshIdentityPath!, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'StrictHostKeyChecking=yes', 'my-vps', `python3 -c ${shellQuoteConstant(SSH_READER)}`],
-        { timeout: 25_000, maxBuffer: 2_100_000, encoding: 'utf8' }, (error, stdout, stderr) => {
+    const timeout = options.timeoutMs ?? 25_000;
+    const execute: SshStatusExecutor = options.sshExecutor ?? ((file, args, settings, callback) => execFile(file, args, settings, callback));
+    let child: SshProcess | undefined; let settled = false;
+    const dispose = () => {
+      try { child?.kill('SIGKILL'); } catch { /* The child may already have exited. */ }
+      for (const stream of [child?.stdin, child?.stdout, child?.stderr]) try { stream?.destroy(); } catch { /* Release every owned pipe independently. */ }
+    };
+    return withReadDeadline(() => new Promise((resolve, reject) => {
+      try {
+      child = execute('/usr/bin/ssh', ['-i', config.sshIdentityPath!, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'StrictHostKeyChecking=yes', 'my-vps', `python3 -c ${shellQuoteConstant(SSH_READER)}`],
+        { timeout, killSignal: 'SIGKILL', maxBuffer: 2_100_000, encoding: 'utf8' }, (error, stdout, stderr) => {
+          if (settled) return; settled = true;
           if (error) return reject(new Error(classifySshFailure(error, stderr)));
           try {
             const result = JSON.parse(stdout);
@@ -101,16 +113,23 @@ export async function readVpsStatus(config: VpsReadConfig, relativePath: string)
             resolve(result);
           } catch { reject(new Error('SSH status service did not return valid JSON.')); }
         });
-      child.stdin?.end(JSON.stringify({ path: relativePath, token: config.apiToken ?? '' }));
-    });
+      } catch (error) { settled = true; dispose(); reject(new Error(classifySshFailure(error as any))); return; }
+      if (!settled) {
+        child.stdin?.on('error', () => { if (settled) return; settled = true; dispose(); reject(new Error('The SSH status request could not be sent. No complete observation was returned.')); });
+        try { child.stdin?.end(JSON.stringify({ path: relativePath, token: config.apiToken ?? '' })); }
+        catch { settled = true; dispose(); reject(new Error('The SSH status request could not be sent. No complete observation was returned.')); }
+      }
+    }), timeout, 'The SSH status read timed out before a complete observation was returned. Refresh to retry.', { onTimeout: () => { settled = true; dispose(); } }).finally(() => { settled = true; });
   }
   if (!config.baseUrl) throw new Error('VPS status connection is not configured.');
   const base = new URL(config.baseUrl);
   if (base.username || base.password) throw new Error('Do not put credentials in the VPS URL.');
   if (base.protocol !== 'https:' && !['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname)) throw new Error('Use HTTPS or the verified SSH status transport. Public HTTP credentials are not sent.');
-  const response = await fetch(new URL(relativePath, base), { method: 'GET', redirect: 'error', headers: { Accept: 'application/json', ...(config.apiToken ? { Authorization: `Bearer ${config.apiToken}` } : {}) }, signal: AbortSignal.timeout(15_000) });
+  return withReadDeadline(async signal => {
+  const response = await fetch(new URL(relativePath, base), { method: 'GET', redirect: 'error', headers: { Accept: 'application/json', ...(config.apiToken ? { Authorization: `Bearer ${config.apiToken}` } : {}) }, signal });
   if (!response.ok) throw new Error(`VPS status request failed (HTTP ${response.status}).`);
   return response.json();
+  }, options.timeoutMs ?? 15_000, 'The VPS status read timed out before a complete response was returned. Refresh to retry.');
 }
 
 export function expertRunObservation(payload: any) {

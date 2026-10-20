@@ -1,5 +1,6 @@
 import { publicHttpUrl } from './editor-workflows';
 import { normalizeTimestamp } from '../../shared/timestamps';
+import { withReadDeadline } from '../../shared/deadline';
 import React, { createContext, useContext, useEffect, useState } from 'react';
 
 export interface StorySelection {
@@ -29,11 +30,16 @@ export function formatTime(value?: unknown) {
   return new Date(normalized).toLocaleString([], {timeZone:'Asia/Yerevan', dateStyle:'medium', timeStyle:'short'});
 }
 export async function request<T = any>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init); const contentType = response.headers.get('content-type') || '';
+  const read = async (options?: RequestInit): Promise<T> => {
+  const response = await fetch(url, options); const contentType = response.headers.get('content-type') || '';
   if (!contentType.includes('application/json')) throw new Error(`This capability is not available from the running backend (HTTP ${response.status}).`);
   const data = await response.json();
   if (!response.ok || data.ok === false) { const error: any = new Error(data.error || data.message || `Request failed (${response.status}).`); error.status = response.status; error.current = data.current; throw error; }
   return data;
+  };
+  const pathname = new URL(url, 'http://studio.local').pathname;
+  const boundedRead = (!init?.method || init.method.toUpperCase() === 'GET') && ['/api/production/status', '/api/pipeline/status', '/api/automations'].includes(pathname);
+  return boundedRead ? withReadDeadline(signal => read({ ...init, signal }), 40_000, 'The production status check timed out. Refresh to try again.', { signal: init?.signal ?? undefined }) : read(init);
 }
 export const jsonBody = (method: string, body: unknown): RequestInit => ({method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
 export function downloadJson(name: string, value: unknown) { const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], {type:'application/json'})); const a=document.createElement('a'); a.href=url; a.download=name; a.click(); URL.revokeObjectURL(url); }
