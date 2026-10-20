@@ -24,3 +24,10 @@
 ## 4. Automation Rules
 - Never publish a post automatically; always save as "Draft" or "Pending Review".
 - Always run a "Health Check" before and after any configuration change.
+
+## 5. Styling and Theme Changes (Chat Colors)
+- If requested to change chat, bubble, or background colors, modify ONLY the CSS variables inside the \`:root\` block of \`src/index.css\`:
+  - \`--user-chat-bubble-bg\`: user bubble color
+  - \`--agent-chat-bubble-bg\`: agent bubble color
+  - \`--liquid-surface-strong\`: sidebar and chat window background
+- Never rewrite the entire \`src/index.css\` file; only modify the target lines inside the \`:root\` block.

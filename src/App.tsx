@@ -1,10 +1,6 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
-import React, { useState, useEffect } from 'react';
-import Sidebar from './components/Sidebar';
+import React, {useEffect, useState} from 'react';
+import {Bot, Menu} from 'lucide-react';
+import Sidebar, {AREAS, areaForTab} from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import ContentReviewer from './components/ContentReviewer';
 import ToolGenerator from './components/ToolGenerator';
@@ -16,142 +12,24 @@ import NewsroomPipeline from './components/NewsroomPipeline';
 import NewsroomHistory from './components/NewsroomHistory';
 import AzatHandbook from './components/AzatHandbook';
 import CodeWorkshop from './components/CodeWorkshop';
+import AutoResearch from './components/AutoResearch';
 import WordPressHealthDashboard from './components/WordPressHealthDashboard';
-import { Menu, Search, Globe, Bot, Monitor } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import SEOAnalytics from './components/SEOAnalytics';
+import EvidenceWorkspace from './components/EvidenceWorkspace';
+import {StudioProvider, useStored, useStudio} from './lib/studio';
 
-export default function App() {
-  const [activeTab, setActiveTab] = useState('dashboard');
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [isChatOpen, setIsChatOpen] = useState(false);
-
-  const renderContent = () => {
-    switch (activeTab) {
-      case 'dashboard':
-        return <Dashboard />;
-      case 'content':
-        return <ContentReviewer />;
-      case 'seo':
-        return (
-          <div className="liquid-surface-strong flex flex-col items-center justify-center h-full text-center p-12 rounded-3xl border">
-            <Search size={48} className="text-sky-300 mb-4" />
-            <h2 className="text-xl font-bold liquid-title mb-2">SEO & Analytics Module</h2>
-            <p className="readable-copy max-w-md">Connect your Google Search Console and Analytics accounts in settings to see detailed query performance and SEO insights.</p>
-          </div>
-        );
-      case 'wordpress':
-        return <WordPressHealthDashboard />;
-      case 'tools':
-        return <ToolGenerator />;
-      case 'automations':
-        return <Automations />;
-      case 'desktop':
-        return <AzatHandbook />;
-      case 'newsroom':
-        return <NewsroomPipeline />;
-      case 'history':
-        return <NewsroomHistory />;
-      case 'workshop':
-        return <CodeWorkshop />;
-      case 'rules':
-        return <RulesManager />;
-      case 'settings':
-        return <Settings />;
-      default:
-        return <Dashboard />;
-    }
-  };
-
-  return (
-    <div className="liquid-page flex h-screen font-sans overflow-hidden">
-      <Sidebar 
-        activeTab={activeTab} 
-        setActiveTab={setActiveTab} 
-        isOpen={isSidebarOpen} 
-        setIsOpen={setIsSidebarOpen} 
-      />
-
-      <main className="relative z-10 flex-1 flex flex-col min-w-0 overflow-hidden px-3 pb-3 lg:px-5 lg:pb-5">
-        {/* Header */}
-        <header className="mt-3 h-16 liquid-surface-strong rounded-2xl border flex items-center justify-between px-4 lg:px-6 flex-shrink-0">
-          <div className="flex items-center gap-4">
-            <button 
-              onClick={() => setIsSidebarOpen(true)}
-              className="liquid-pill p-2 liquid-muted hover:liquid-title rounded-lg lg:hidden transition-colors"
-            >
-              <Menu size={20} />
-            </button>
-            <div className="hidden lg:flex items-center gap-2 text-sm liquid-soft font-medium">
-              <span>Azat</span>
-              <span className="opacity-40">/</span>
-              <span className="liquid-title capitalize">{activeTab.replace('-', ' ')}</span>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <button 
-              onClick={() => setIsChatOpen(!isChatOpen)}
-              className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-bold transition-all ${
-                isChatOpen ? 'liquid-accent text-white' : 'liquid-pill text-sky-700 hover:text-sky-800'
-              }`}
-            >
-              <Bot size={18} />
-              <span className="hidden sm:inline">Ask Studio</span>
-            </button>
-            <div className="w-8 h-8 rounded-full liquid-pill border flex items-center justify-center text-sky-600">
-              <Bot size={20} />
-            </div>
-          </div>
-        </header>
-
-        {/* Content Area */}
-        <div className="flex-1 flex overflow-hidden pt-3 relative">
-          <div className="flex-1 overflow-y-auto p-2 lg:p-4 w-full">
-            <AnimatePresence mode="wait">
-              <motion.div
-                key={activeTab}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.28, ease: 'easeOut' }}
-                className="h-full"
-              >
-                {renderContent()}
-              </motion.div>
-            </AnimatePresence>
-          </div>
-
-          {/* Chat Panel - Overlay with backdrop */}
-          <AnimatePresence>
-            {isChatOpen && (
-              <>
-                {/* Backdrop scrim */}
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  className="absolute inset-0 z-40 bg-slate-900/20 backdrop-blur-[2px] md:hidden"
-                  onClick={() => setIsChatOpen(false)}
-                />
-                {/* Chat panel */}
-                <motion.div
-                  initial={{ opacity: 0, x: 20, scale: 0.97 }}
-                  animate={{ opacity: 1, x: 0, scale: 1 }}
-                  exit={{ opacity: 0, x: 20, scale: 0.97 }}
-                  transition={{ type: 'spring', damping: 28, stiffness: 260 }}
-                  className="absolute right-0 top-0 bottom-0 w-full md:w-[420px] lg:w-[460px] z-50 p-2 lg:p-3"
-                  style={{ filter: 'drop-shadow(-8px 0 24px rgba(0,0,0,0.12))' }}
-                >
-                  <AgentChat 
-                    context={`Currently viewing the ${activeTab} tab of Azat Studio.`} 
-                    onClose={() => setIsChatOpen(false)}
-                  />
-                </motion.div>
-              </>
-            )}
-          </AnimatePresence>
-        </div>
-      </main>
-    </div>
-  );
+function Workspace() {
+  const [activeTab,setActiveTab] = useStored('azat.studio.active-tab.v2','dashboard');
+  const [sidebarOpen,setSidebarOpen] = useState(false);
+  const [chatOpen,setChatOpen] = useStored('azat.studio.assistant.v2',false);
+  const {selection,selectStory}=useStudio();
+  const [settingsVisited,setSettingsVisited]=useState(activeTab==='settings');
+  useEffect(()=>{if(activeTab==='settings')setSettingsVisited(true);},[activeTab]);
+  const area = areaForTab(activeTab);
+  useEffect(()=>{const handler=(e:KeyboardEvent)=>{if((e.metaKey||e.ctrlKey)&&e.key==='k'){e.preventDefault();setChatOpen(v=>!v);}};window.addEventListener('keydown',handler);return()=>window.removeEventListener('keydown',handler);},[]);
+  const current = AREAS.find(item=>item.id===area) || AREAS[0];
+  const context = JSON.stringify({area:current.label,view:activeTab,permissions:'Advice and research only. Do not execute changes. Do not claim live state unless a tool receipt establishes it. Local evidence status is not publication or factual verification.'},null,2);
+  const pages:Record<string,React.ReactNode>={dashboard:<Dashboard setActiveTab={setActiveTab}/>,content:<ContentReviewer/>,evidence:<EvidenceWorkspace/>,seo:<SEOAnalytics/>,wordpress:<WordPressHealthDashboard/>,tools:<ToolGenerator/>,automations:<Automations/>,desktop:<AzatHandbook/>,newsroom:<NewsroomPipeline/>,history:<NewsroomHistory/>,workshop:<CodeWorkshop/>,autoresearch:<AutoResearch/>,rules:<RulesManager/>};
+  return <div className="studio-shell"><Sidebar activeTab={activeTab} setActiveTab={setActiveTab} isOpen={sidebarOpen} setIsOpen={setSidebarOpen}/><div className="studio-main"><header className="studio-topbar drag-region"><div className="topbar-title no-drag"><button className="icon-btn mobile-menu" aria-label="Open navigation" onClick={()=>setSidebarOpen(true)}><Menu size={19}/></button><span>Studio</span><span className="muted">/</span><strong>{current.label}</strong></div><button className={`btn no-drag ${chatOpen?'btn-selected':''}`} aria-expanded={chatOpen} aria-controls="studio-assistant" onClick={()=>setChatOpen(v=>!v)}><Bot size={16}/> Assistant <kbd>⌘K</kbd></button></header><nav className="subnav" aria-label={`${current.label} views`}>{current.tabs.map(tab=><button key={tab.id} aria-current={activeTab===tab.id?'page':undefined} className={activeTab===tab.id?'active':''} onClick={()=>setActiveTab(tab.id)}>{tab.label}</button>)}</nav>{selection && <div className="story-context"><span className="context-label">Selected story</span><strong title={selection.title}>{selection.title}</strong><span className="badge">{selection.language || (selection.kind==='wordpress'?'WordPress':'Evidence')}</span><button className="text-btn" onClick={()=>setActiveTab(selection.kind==='wordpress'?'content':'evidence')}>Open</button><button className="icon-btn" onClick={()=>selectStory(null)} aria-label="Clear selected story">×</button></div>}<div className={`workspace-columns ${chatOpen?'with-assistant':''}`}><main id="main-content" className="workspace-content"><div hidden={activeTab!=='settings'}>{(settingsVisited||activeTab==='settings')&&<Settings/>}</div>{activeTab!=='settings'&&<div key={activeTab}>{pages[activeTab] || pages.dashboard}</div>}</main>{chatOpen && <aside id="studio-assistant" className="assistant-dock" aria-label="Contextual assistant"><AgentChat context={context} onClose={()=>setChatOpen(false)}/></aside>}</div></div></div>;
 }
+export default function App(){return <StudioProvider><Workspace/></StudioProvider>;}

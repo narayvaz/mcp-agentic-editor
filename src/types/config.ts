@@ -7,6 +7,10 @@ export interface WordPressSiteConfig {
 }
 
 export interface VpsConfig {
+  transport?: 'https' | 'ssh';
+  sshHost?: string;
+  sshIdentityPath?: string;
+  runStatusPath?: string;
   baseUrl: string;
   apiToken: string;
   automationsPath: string;
@@ -47,6 +51,8 @@ export interface ResearchConfig {
 }
 
 export interface AppConfig {
+  secretStatus?: Record<string, boolean>;
+  clearSecrets?: string[];
   version: number;
   activeSiteId: string | null;
   wordpressSites: WordPressSiteConfig[];

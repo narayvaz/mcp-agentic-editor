@@ -1,0 +1,88 @@
+name: Draft test release
+
+# Deliberately no push, tag, release, or workflow_run trigger.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: draft-test-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    uses: ./.github/workflows/verify-macos.yml
+  draft:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # This job never checks out or executes application/repository code.
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.verify.outputs.artifact-id }}
+          path: checked-release
+          merge-multiple: true
+          digest-mismatch: error
+      - name: Validate provenance and create only a draft prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_RUN: ${{ github.run_id }}
+          EXPECTED_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import crypto from 'node:crypto';
+          import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          const dir = 'checked-release';
+          const metadata = JSON.parse(fs.readFileSync(path.join(dir, 'release-provenance.json'), 'utf8'));
+          assert.match(metadata.version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+          assert.match(metadata.buildId, /^[0-9A-Za-z._-]+$/);
+          assert.equal(metadata.commit, process.env.EXPECTED_SHA);
+          assert.equal(metadata.runId, process.env.EXPECTED_RUN);
+          assert.equal(metadata.runAttempt, process.env.EXPECTED_ATTEMPT);
+          assert.equal(metadata.testOnly, true);
+          assert.equal(metadata.signing, 'adhoc');
+          assert.equal(metadata.nativeQA, 'pending');
+          const entries = fs.readdirSync(dir).sort();
+          const expected = [...Object.keys(metadata.sha256), 'release-provenance.json'].sort();
+          assert.deepEqual(entries, expected, 'Only allowlisted checked assets may be attached');
+          const required = [`Azat-Studio-${metadata.version}-arm64.zip`, `Azat-Studio-${metadata.version}-arm64.dmg`, 'latest-mac.yml', 'build-manifest.json', 'packaged-verification.json', 'SHA256SUMS'];
+          for (const name of required) assert.ok(entries.includes(name), `Missing ${name}`);
+          for (const [name, digest] of Object.entries(metadata.sha256)) {
+            assert.ok(required.includes(name) || /^Azat-Studio-[0-9A-Za-z.-]+-arm64\.(zip|dmg)\.blockmap$/.test(name), 'Unexpected asset name');
+            assert.equal(path.basename(name), name);
+            assert.match(digest, /^[a-f0-9]{64}$/);
+            assert.ok(fs.lstatSync(path.join(dir, name)).isFile());
+            assert.equal(crypto.createHash('sha256').update(fs.readFileSync(path.join(dir, name))).digest('hex'), digest, `Changed asset: ${name}`);
+          }
+          const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'build-manifest.json'), 'utf8'));
+          assert.equal(manifest.buildId, metadata.buildId);
+          assert.equal(manifest.appVersion, metadata.version);
+          const tag = `candidate-${metadata.buildId}-${process.env.EXPECTED_RUN}-${process.env.EXPECTED_ATTEMPT}`;
+          const notes = [
+            'TEST PACKAGE — native acceptance review is still pending.',
+            '',
+            `Commit: ${metadata.commit}`,
+            `Build: ${metadata.buildId}`,
+            `Workflow: ${metadata.runUrl}`,
+            '',
+            'This ad-hoc signed ARM64 package is not notarized and does not establish automatic-update compatibility.',
+            'Do not publish this draft, promote it to Latest, or replace a working installation until the native review and migration in docs/RELEASING.md are complete.',
+            'No website deployment, credential setup, or running-application replacement was performed by this workflow.',
+          ].join('\n');
+          fs.writeFileSync('draft-notes.md', notes);
+          execFileSync('gh', ['release', 'create', tag, '--repo', process.env.GH_REPO, '--target', process.env.EXPECTED_SHA, '--draft', '--prerelease', '--latest=false', '--title', `Azat Studio ${metadata.version} — test candidate`, '--notes-file', 'draft-notes.md', ...entries.map(name => path.join(dir, name))], { stdio: 'inherit' });
+          const release = JSON.parse(execFileSync('gh', ['release', 'view', tag, '--repo', process.env.GH_REPO, '--json', 'isDraft,isPrerelease,url'], { encoding: 'utf8' }));
+          assert.equal(release.isDraft, true);
+          assert.equal(release.isPrerelease, true);
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Draft test candidate: ${release.url}\n\nNative QA pending; no stable release was published.\n`);
+          NODE

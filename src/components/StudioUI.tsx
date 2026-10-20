@@ -1,0 +1,8 @@
+import React from 'react';
+import { AlertCircle, Inbox, RefreshCw } from 'lucide-react';
+export function PageTitle({eyebrow, title, children, action}: {eyebrow?:string; title:string; children?:React.ReactNode; action?:React.ReactNode}) { return <header className="page-title"><div>{eyebrow && <p className="eyebrow">{eyebrow}</p>}<h1>{title}</h1>{children && <div className="page-description">{children}</div>}</div>{action}</header>; }
+export function Notice({children, kind='info'}:{children:React.ReactNode; kind?:'info'|'warning'|'error'|'success'}) { return <div className={`notice notice-${kind}`} role={kind==='error' ? 'alert' : 'status'}><AlertCircle size={16} aria-hidden="true"/><div>{children}</div></div>; }
+export function EmptyState({title, children, action}:{title:string; children:React.ReactNode; action?:React.ReactNode}) { return <div className="empty-state"><Inbox size={28} aria-hidden="true"/><h2>{title}</h2><p>{children}</p>{action}</div>; }
+export function RefreshButton({onClick, busy=false}:{onClick:()=>void; busy?:boolean}) { return <button className="btn" onClick={onClick} disabled={busy}><RefreshCw size={15} className={busy?'animate-spin':''}/> {busy?'Checking…':'Refresh'}</button>; }
+export function Badge({children, tone='neutral'}:{children:React.ReactNode; tone?:'neutral'|'good'|'warning'|'error'}) {return <span className={`badge badge-${tone}`}>{children}</span>;}
+export function Field({label, children, help}:{label:string; children:React.ReactNode; help?:string}) {return <label className="field"><span>{label}</span>{children}{help && <small>{help}</small>}</label>;}

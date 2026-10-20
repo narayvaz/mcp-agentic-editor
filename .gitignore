@@ -5,6 +5,9 @@ dist-server/
 dist-electron/
 release/
 coverage/
+checked-release/
+build-manifest.json
+packaged-verification.json
 .DS_Store
 *.log
 .env*
