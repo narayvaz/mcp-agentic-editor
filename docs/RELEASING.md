@@ -49,27 +49,31 @@ The review must cover every view in the five main areas and Development lab, inc
 | Area | Views and essential coverage | Acceptance status |
 | --- | --- | --- |
 | Work | Overview and Article review; selection, refresh, review controls, editable fields, draft persistence and restoration | Partial: multilingual editing, isolated preview, before/after preflight, cancel, fixture save receipt, stale-revision block and draft preservation across navigation/reload observed. |
-| Evidence | Story records; create/open/select, source links, evidence fields, provenance and freshness | Partial: create/source/claim validation, save, language output, delayed output selection and delayed conflict isolation observed. Correction/recovery and full retained-output interaction remain pending. |
+| Evidence | Story records; create/open/select, source links, evidence fields, provenance and freshness | Partial: create/source/claim validation, save, language output, delayed output selection and delayed conflict isolation observed. Conflict recovery and correction history/stale-output labels also observed; full retained-output interaction/export remains pending. |
 | Production | Runs & outputs and Schedules; current/empty/unavailable runs, output links and truthful availability of actions | Partial: real observer initially returned data; a subsequent native refresh failed and requires diagnosis. Fixture views, readable source times and unavailable executor controls observed. |
 | Audience | Search performance; refresh, data freshness, unavailable credentials and empty results | Partial: fixture reporting, opportunities, injected unavailable state and successful retry observed. Final native reporting check remains pending. |
 | System | Health, Connections, Editorial rules, Activity and Guide; connection/rule forms, masking, validation, persistence, history and documentation | Partial: redacted native settings, unsaved navigation retention/revert; fixture discard, add/remove/save site, SSH/HTTPS fields, staged rule save, activity filter and Guide observed. Not every connection/update control accepted. |
 | Development lab | Prompt recipes, Code workshop and Experiments; recipe/proposal controls, immutable approval, staging, stop/cancel, conflicts and operator handoff | Partial: local recipe create/edit and fixture response; proposal preparation, exact-review checkbox, disabled validation until consent and simulated validation handoff observed. Actual isolation is covered separately by host tests. |
-| Shared interface | Main/subnavigation, selected-story context, Assistant toggle and close, Assistant controls, overlays, notifications and external links | Partial: navigation, context opt-out, fixture response, Stop feedback, overlay keyboard entry/Tab wrap/Escape return, mobile navigation priority and resize recovery observed. Archive shortcut retest, attachments and full external-link coverage pending. |
+| Shared interface | Main/subnavigation, selected-story context, Assistant toggle and close, Assistant controls, overlays, notifications and external links | Partial: navigation, context opt-out, fixture response, Stop feedback, overlay keyboard entry/Tab wrap/Escape return, mobile navigation priority and resize recovery observed. Archived-send shortcut blocked, restore re-enables Send, and harmless attachment add/remove observed. Export download receipt and full external-link coverage remain pending. |
 
 For **every enabled control and form**, exercise loading, empty, failure, conflict, cancel and success states wherever applicable. Record a reason when a state cannot apply. Check duplicate clicks, stale results, validation errors, safe retry, cancellation during work, truthful completion feedback and state after relaunch. A missing integration must produce an actionable unavailable state rather than a fabricated success.
 
-Review keyboard-only operation, visible focus, logical tab order, focus entry/return for overlays, Escape/close behavior, and usable screen-reader names and state announcements with macOS VoiceOver. Explicitly test dirty Settings when navigating between views, saving and discarding; article draft restoration after navigation/relaunch; and Assistant opening/closing and the keyboard toggle while work or an unsaved form is active. Only the explicitly recorded checks above have passed; VoiceOver and complete keyboard-only acceptance remain **pending**.
+Review keyboard-only operation, visible focus, logical tab order, focus entry/return for overlays, Escape/close behavior, and usable screen-reader names and state announcements with macOS VoiceOver. Explicitly test dirty Settings when navigating between views, saving and discarding; article draft restoration after navigation/relaunch; and Assistant opening/closing and the keyboard toggle while work or an unsaved form is active. Credential access now resolves asynchronously only at the requested service boundary, with a three-second helper deadline and a short memory cache. Metadata/settings/health reads do not open the Keychain. Fake-helper regressions verify main-loop responsiveness, per-account independence, cancellation, redacted errors and retained saved references; real connection/native acceptance is recorded separately.
 
-| Desktop viewport in CSS pixels | Reflow and interaction status |
+Only the explicitly recorded checks above have passed; VoiceOver and complete keyboard-only acceptance remain **pending**.
+
+The actual frontend was measured in **224 combinations**: 14 views × eight viewport sizes × assistant closed/open. All sampled normal fixture states fit the document/header/main bounds; the assistant and composer fit their viewport. These are layout checks, not complete interaction or accessibility acceptance.
+
+| Desktop viewport in CSS pixels | Fixture layout result |
 | --- | --- |
-| 320 × 800 | Connections: no document/main horizontal overflow observed. Other view/zoom coverage pending. |
-| 390 × 700 | Connections reflow and mobile navigation over assistant observed. Full matrix pending. |
-| 721 × 500 | Connections reflow and compact assistant screenshot reviewed. |
-| 800 × 950 | Connections reflow; widening clears mobile-nav main-content lock. |
-| 768 × 1024 | Connections: no document/main horizontal overflow observed. Full matrix pending. |
-| 1024 × 768 | Connections: no document/main horizontal overflow observed. Full matrix pending. |
-| 1200 × 800 | Native launch and fixture core flows observed. Complete view/zoom matrix pending. |
-| 1440 × 900 | Connections: no document/main horizontal overflow observed. Full matrix pending. |
+| 320 × 800 | All 14 views; assistant closed/open; passed bounds checks. |
+| 390 × 700 | All 14 views; assistant closed/open; passed. Mobile navigation priority also observed. |
+| 721 × 500 | All 14 views; assistant closed/open; passed. Compact assistant screenshot reviewed. |
+| 768 × 1024 | All 14 views; assistant closed/open; passed. |
+| 800 × 950 | All 14 views; assistant closed/open; passed. Widening clears mobile-nav lock. |
+| 1024 × 768 | All 14 views; assistant closed/open; passed. |
+| 1200 × 800 | All 14 views; assistant closed/open; passed. Native startup also observed. |
+| 1440 × 900 | All 14 views; assistant closed/open; passed. |
 
 At each size, review every view with Assistant both closed and open, long Armenian/Russian/English text, empty/error/loading content, and **200% zoom**. Confirm forms and action bars fit, navigation remains reachable, focus stays visible, overlays remain dismissible, and scrolling does not trap essential controls. Record any minimum-window limitation explicitly and repeat at the smallest supported native height. The narrower sizes are desktop layout/reflow tests, including emulated content widths if the native window cannot shrink that far; they do **not** establish support on real mobile devices or mobile operating systems. The recorded partial checks do not complete this matrix; 200% zoom, every-view states and actual mobile operating systems remain unverified.
 

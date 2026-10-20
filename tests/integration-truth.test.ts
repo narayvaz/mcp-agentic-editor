@@ -86,6 +86,36 @@ test('schedule observations return normalized worker updates and retain cached s
 test('no VPS connection means unavailable observations, never fake scheduled jobs', async () => {
   const result = await observeProduction({ vps: {} }); assert.equal(result.available, false); assert.deepEqual(result.items, []); assert.equal(result.capabilities.trigger, false);
 });
+test('pending VPS-only credentials leave WordPress and timers responsive and preserve cached partial observations', async t => {
+  let resolveCredentials!: (value: any) => void; let resolutions = 0; let googleReads = 0; let vpsReads = 0;
+  const credentials = new Promise<any>(resolve => { resolveCredentials = resolve; });
+  const config: any = { vps: { baseUrl: 'https://vps.example', apiToken: 'keychain://fixture-vps' }, wordpressSites: [{ id: 'hy', baseUrl: 'https://wordpress.example' }], activeSiteId: 'hy' };
+  Object.defineProperty(config, 'google', { get() { googleReads++; throw new Error('Unrelated Google credential is unavailable.'); } });
+  t.mock.method(globalThis, 'fetch', async (url: any, init: any) => {
+    if (String(url).startsWith('https://wordpress.example/')) return Response.json({ namespaces: ['wp/v2'] });
+    vpsReads++; assert.equal(new Headers(init.headers).get('Authorization'), 'Bearer fixture-only');
+    return String(url).endsWith('/api/expert/status') ? Response.json({ is_running: false, topic_count: 0, manifest: {} }) : new Response('', { status: 503 });
+  });
+  const api = fakeApp(); registerObservationRoutes(api.app, { readConfig: () => config, resolveVpsConfig: async vps => { resolutions++; assert.equal(vps, config.vps); return credentials; }, getGoogleAccessToken: async () => { throw new Error('must not request Google token'); } });
+  let completed = false;
+  const production = api.request('get', '/api/production/status').then(result => { completed = true; return result; });
+  const cached = api.request('get', '/api/pipeline/status');
+  const health = await api.request('get', '/api/wordpress/health');
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+  assert.equal(health.data.status, 'healthy'); assert.equal(completed, false); assert.equal(vpsReads, 0); assert.equal(resolutions, 1); assert.equal(googleReads, 0);
+  resolveCredentials({ ...config.vps, apiToken: 'fixture-only' });
+  const [first, second] = await Promise.all([production, cached]);
+  assert.equal(first.data.available, true); assert.equal(first.data.items[0].counts.topics, 0); assert.equal(first.data.errors[0].id, 'smart'); assert.match(first.data.errors[0].error, /HTTP 503/);
+  assert.equal(vpsReads, 2); assert.equal(resolutions, 1); assert.equal(googleReads, 0); assert.deepEqual(second.data, first.data);
+});
+test('VPS credential rejection becomes both worker errors without starting network reads', async t => {
+  let reads = 0; let resolutions = 0;
+  t.mock.method(globalThis, 'fetch', async () => { reads++; throw new Error('must not fetch'); });
+  const result = await observeProduction({ vps: { baseUrl: 'https://vps.example' } }, async () => { resolutions++; throw new Error('VPS credential is unavailable.'); });
+  assert.equal(result.available, false); assert.equal(result.source, 'vps-error'); assert.deepEqual(result.items, []);
+  assert.deepEqual(result.errors, [{ id: 'expert', error: 'VPS credential is unavailable.' }, { id: 'smart', error: 'VPS credential is unavailable.' }]);
+  assert.equal(resolutions, 1); assert.equal(reads, 0);
+});
 test('WordPress HTTP failures do not create healthy status, security findings, scores, or uptime', async t => {
   t.mock.method(globalThis, 'fetch', async () => new Response('error', { status: 500 }));
   const result = await observeWordPress({ baseUrl: 'https://example.com', name: 'test' });
@@ -145,6 +175,20 @@ test('WordPress success receipt requires confirmed remote readback', async t => 
   t.mock.method(globalThis, 'fetch', async (_url: any, init: any) => { writes++; assert.deepEqual(JSON.parse(init.body), { content: '<p>Edit</p>' }); assert.equal(init.redirect, 'error'); return Response.json({ id: 7 }); });
   const response = await wpApi(async () => ++reads === 1 ? basePost : updated).request('put', '/api/wp/post/:postId', { content: '<p>Edit</p>', expectedRevision: basePost.revision }, { postId: '7' });
   assert.equal(response.status, 200); assert.equal(response.data.receipt.revision, updated.revision); assert.equal(response.data.atomicRemoteCompare, false); assert.equal(reads, 2); assert.equal(writes, 1);
+});
+test('WordPress saves await asynchronous site credentials and preserve the readback receipt', async t => {
+  let reads = 0; let writes = 0; let credentialsReady = false;
+  const updated = normalizeWordPressPost({ ...rawPost, content: { raw: '<p>Edit</p>', rendered: '<p>Edit</p>' } });
+  t.mock.method(globalThis, 'fetch', async (_url: any, init: any) => { writes++; assert.equal(credentialsReady, true); assert.equal(new Headers(init.headers).get('Authorization'), 'Basic fixture-only'); assert.equal(new Headers(init.headers).get('Content-Type'), 'application/json'); return Response.json({ id: 7 }); });
+  const api = fakeApp(); registerWordPressEditRoutes(api.app, { readConfig: () => ({}), getSite: () => ({ id: 'hy', baseUrl: 'https://example.com' }), fetchPost: async () => ++reads === 1 ? basePost : updated, authHeaders: async () => { await new Promise<void>(resolve => setTimeout(resolve, 0)); credentialsReady = true; return new Headers({ Authorization: 'Basic fixture-only' }); } });
+  const result = await api.request('put', '/api/wp/post/:postId', { content: '<p>Edit</p>', expectedRevision: basePost.revision }, { postId: '7' });
+  assert.equal(result.status, 200); assert.equal(result.data.receipt.revision, updated.revision); assert.equal(reads, 2); assert.equal(writes, 1);
+});
+test('WordPress credential failure prevents the write and returns no success receipt', async t => {
+  let writes = 0; t.mock.method(globalThis, 'fetch', async () => { writes++; throw new Error('must not write'); });
+  const api = fakeApp(); registerWordPressEditRoutes(api.app, { readConfig: () => ({}), getSite: () => ({ id: 'hy', baseUrl: 'https://example.com' }), fetchPost: async () => basePost, authHeaders: async () => { throw new Error('Site credential is unavailable.'); } });
+  const result = await api.request('put', '/api/wp/post/:postId', { content: '<p>Edit</p>', expectedRevision: basePost.revision }, { postId: '7' });
+  assert.equal(result.status, 502); assert.equal(result.data.ok, false); assert.equal(result.data.receipt, undefined); assert.equal(writes, 0);
 });
 test('mismatched remote readback does not claim the requested edit succeeded', async t => {
   t.mock.method(globalThis, 'fetch', async () => Response.json({ id: 7 }));

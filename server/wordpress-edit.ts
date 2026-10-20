@@ -16,7 +16,7 @@ export function postEditPreview(current: ReturnType<typeof normalizeWordPressPos
 }
 
 export function registerWordPressEditRoutes(app: Express, dependencies: {
-  readConfig: () => any; getSite: (config: any, siteId?: string) => any; fetchPost: (site: any, id: number) => Promise<ReturnType<typeof normalizeWordPressPost>>; authHeaders: (site: any) => HeadersInit;
+  readConfig: () => any; getSite: (config: any, siteId?: string) => any; fetchPost: (site: any, id: number) => Promise<ReturnType<typeof normalizeWordPressPost>>; authHeaders: (site: any) => HeadersInit | Promise<HeadersInit>;
 }) {
   const active = new Set<string>();
   app.get('/api/wp/post/:postId', async (req, res) => {
@@ -48,7 +48,9 @@ export function registerWordPressEditRoutes(app: Express, dependencies: {
       const target = new URL(`${site.baseUrl.replace(/\/+$/, '')}/wp-json/wp/v2/posts/${postId}?context=edit`);
       if (target.protocol !== 'https:' && !['127.0.0.1', 'localhost', '[::1]'].includes(target.hostname)) return res.status(400).json({ error: 'WordPress edits require HTTPS.' });
       const changes = Object.fromEntries(diff.changedFields.map(field => [field, diff.after[field]]));
-      const response = await fetch(target, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(20_000), headers: { 'Content-Type': 'application/json', ...dependencies.authHeaders(site) }, body: JSON.stringify(changes) });
+      const headers = new Headers(await dependencies.authHeaders(site));
+      headers.set('Content-Type', 'application/json');
+      const response = await fetch(target, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(20_000), headers, body: JSON.stringify(changes) });
       if (!response.ok) return res.status(502).json({ ok: false, error: `WordPress rejected the edit (HTTP ${response.status}).` });
       const responsePost = await response.json();
       if (responsePost?.id !== postId) return res.status(502).json({ ok: false, error: 'WordPress did not return the expected article. Reload before retrying.' });

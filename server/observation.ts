@@ -2,7 +2,7 @@ import type { Express } from 'express';
 import { createHash } from 'node:crypto';
 import { completedGscWindow, expertRunObservation, readVpsStatus, smartRunObservation } from './integrations';
 
-type Dependencies = { readConfig: () => any; getGoogleAccessToken: (config: any, scopes: string[]) => Promise<string> };
+type Dependencies = { readConfig: () => any; getGoogleAccessToken: (config: any, scopes: string[]) => Promise<string>; resolveVpsConfig?: (config: any) => Promise<any> };
 export async function observeWordPress(site: any) {
   const observedAt = new Date().toISOString();
   if (!site) return { site: 'none', status: 'not-configured', lastCheck: observedAt, metrics: [], performance: { score: null, responseTime: null, uptime: null }, error: 'No WordPress site configured.' };
@@ -21,14 +21,15 @@ export async function observeWordPress(site: any) {
   } catch { return { site: site.name || site.baseUrl, siteUrl: site.baseUrl, status: 'unreachable', lastCheck: observedAt, metrics: [], performance: { score: null, responseTime: null, uptime: null }, error: 'WordPress REST API could not be reached.' }; }
 }
 
-export async function observeProduction(config: any) {
+export async function observeProduction(config: any, resolveVpsConfig?: Dependencies['resolveVpsConfig']) {
   const vps = config.vps ?? {};
   const observedAt = new Date().toISOString();
   const capabilities = { observe: true, trigger: false, stop: false };
   if (!vps.baseUrl && vps.transport !== 'ssh') return { available: false, source: 'not-configured', observedAt, items: [], capabilities, note: 'Configure HTTPS or the verified SSH connection to observe Expert and Smart.' };
+  const resolvedVps = Promise.resolve().then(() => resolveVpsConfig ? resolveVpsConfig(vps) : vps);
   const outcomes = await Promise.allSettled([
-    readVpsStatus(vps, '/api/expert/status').then(expertRunObservation),
-    readVpsStatus(vps, '/api/smart_status').then(smartRunObservation),
+    resolvedVps.then(resolved => readVpsStatus(resolved, '/api/expert/status')).then(expertRunObservation),
+    resolvedVps.then(resolved => readVpsStatus(resolved, '/api/smart_status')).then(smartRunObservation),
   ]);
   const items = outcomes.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
   const errors = outcomes.flatMap((result, index) => result.status === 'rejected' ? [{ id: index === 0 ? 'expert' : 'smart', error: result.reason instanceof Error ? result.reason.message : 'Status unavailable.' }] : []);
@@ -41,7 +42,7 @@ export function registerObservationRoutes(app: Express, dependencies: Dependenci
   const production = () => {
     const config = dependencies.readConfig();
     const key = createHash('sha256').update(JSON.stringify(config.vps ?? {})).digest('hex');
-    if (!productionCache || productionCache.key !== key || Date.now() - productionCache.at > 15_000) productionCache = { key, at: Date.now(), value: observeProduction(config) };
+    if (!productionCache || productionCache.key !== key || Date.now() - productionCache.at > 15_000) productionCache = { key, at: Date.now(), value: observeProduction(config, dependencies.resolveVpsConfig) };
     return productionCache.value;
   };
   app.get('/api/wordpress/health', async (_req, res) => { const config = dependencies.readConfig(); res.json(await observeWordPress(config.wordpressSites.find((site: any) => site.id === config.activeSiteId) ?? config.wordpressSites[0])); });

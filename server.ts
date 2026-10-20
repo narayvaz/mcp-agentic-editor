@@ -15,6 +15,7 @@ import { createRuntimeSecurity, getRuntimeIdentity } from "./server/runtime-secu
 import { readReleaseInfo } from "./server/release-info";
 import { generateWithBoundedFallback } from "./server/model-client";
 import { mergeSettingsSecrets, redactSettings, publicSites } from "./server/settings-security";
+import { createCredentialStore } from "./server/credential-store";
 
 // Global variables for DevOps and TV Newsroom Pipeline
 let currentBuildProcess: any = null;
@@ -293,8 +294,7 @@ function getSelfModOperationSnapshot() {
   };
 }
 
-const KEYCHAIN_SERVICE = "Azat Studio";
-const KEYCHAIN_REF_PREFIX = "keychain://";
+const credentialStore = createCredentialStore();
 
 interface WebSource {
   title: string;
@@ -408,94 +408,6 @@ function isKeychainSupported(): boolean {
   return process.platform === "darwin";
 }
 
-function toKeychainRef(account: string): string {
-  return `${KEYCHAIN_REF_PREFIX}${account}`;
-}
-
-function keychainAccountFromValue(value: string): string {
-  return value.startsWith(KEYCHAIN_REF_PREFIX) ? value.slice(KEYCHAIN_REF_PREFIX.length) : "";
-}
-
-function readKeychainSecret(account: string): string {
-  if (!isKeychainSupported()) return "";
-  try {
-    return String(
-      execFileSync("security", ["find-generic-password", "-a", account, "-s", KEYCHAIN_SERVICE, "-w"], {
-        encoding: "utf-8",
-      }),
-    ).trim();
-  } catch {
-    return "";
-  }
-}
-
-function writeKeychainSecret(account: string, value: string): boolean {
-  if (!isKeychainSupported()) return false;
-  try {
-    execFileSync("security", ["add-generic-password", "-a", account, "-s", KEYCHAIN_SERVICE, "-w", value, "-U"], {
-      stdio: "ignore",
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function resolveSecretValue(account: string, value: string): string {
-  const trimmed = (value || "").trim();
-  if (!trimmed) return "";
-  const accountFromRef = keychainAccountFromValue(trimmed);
-  if (accountFromRef) {
-    return readKeychainSecret(accountFromRef) || "";
-  }
-  return trimmed;
-}
-
-function storeSecretValue(account: string, value: string): string {
-  const trimmed = (value || "").trim();
-  if (!trimmed) return "";
-  if (trimmed.startsWith(KEYCHAIN_REF_PREFIX)) return trimmed;
-  if (!isKeychainSupported()) throw new Error("Secure credential storage is unavailable. No plaintext credential was saved.");
-  if (readKeychainSecret(account) === trimmed) return toKeychainRef(account);
-  const versionedAccount = `${account}.${Date.now()}.${createHash('sha256').update(trimmed).digest('hex').slice(0, 12)}`;
-  if (!writeKeychainSecret(versionedAccount, trimmed)) throw new Error("Keychain could not save the credential. Settings were not saved.");
-  return toKeychainRef(versionedAccount);
-}
-
-function hydrateConfigSecrets(config: AppConfig): AppConfig {
-  const hydrated: AppConfig = JSON.parse(JSON.stringify(config));
-
-  hydrated.ai.apiKey = resolveSecretValue("ai.apiKey", hydrated.ai.apiKey);
-  hydrated.vps.apiToken = resolveSecretValue("vps.apiToken", hydrated.vps.apiToken);
-  hydrated.hostinger.apiToken = resolveSecretValue("hostinger.apiToken", hydrated.hostinger.apiToken);
-  hydrated.google.serviceAccountJson = resolveSecretValue("google.serviceAccountJson", hydrated.google.serviceAccountJson);
-
-  hydrated.wordpressSites = hydrated.wordpressSites.map((site) => ({
-    ...site,
-    username: resolveSecretValue(`wordpress.${site.id}.username`, site.username),
-    appPassword: resolveSecretValue(`wordpress.${site.id}.appPassword`, site.appPassword),
-  }));
-
-  return hydrated;
-}
-
-function persistConfigSecrets(config: AppConfig): AppConfig {
-  const stored: AppConfig = JSON.parse(JSON.stringify(config));
-
-  stored.ai.apiKey = storeSecretValue("ai.apiKey", stored.ai.apiKey);
-  stored.vps.apiToken = storeSecretValue("vps.apiToken", stored.vps.apiToken);
-  stored.hostinger.apiToken = storeSecretValue("hostinger.apiToken", stored.hostinger.apiToken);
-  stored.google.serviceAccountJson = storeSecretValue("google.serviceAccountJson", stored.google.serviceAccountJson);
-
-  stored.wordpressSites = stored.wordpressSites.map((site) => ({
-    ...site,
-    username: storeSecretValue(`wordpress.${site.id}.username`, site.username),
-    appPassword: storeSecretValue(`wordpress.${site.id}.appPassword`, site.appPassword),
-  }));
-
-  return stored;
-}
-
 function readConfig(): AppConfig {
   const configPath = getConfigFilePath();
   if (!fs.existsSync(configPath)) {
@@ -525,7 +437,8 @@ function readConfig(): AppConfig {
     if (merged.activeSiteId && !merged.wordpressSites.some((site) => site.id === merged.activeSiteId)) {
       merged.activeSiteId = merged.wordpressSites[0]?.id || null;
     }
-    return hydrateConfigSecrets(merged);
+    // Metadata and saved references are safe to read synchronously. Resolve only the requested service's credentials asynchronously.
+    return merged;
   } catch (error) {
     console.error("Failed to read config file, using defaults:", error);
     return defaultConfig();
@@ -603,36 +516,36 @@ function sanitizeConfigInput(input: Partial<AppConfig>): AppConfig {
   return merged;
 }
 
-function writeConfig(config: AppConfig): void {
-  const configPath = getConfigFilePath();
-  let previous: AppConfig | null = null;
-  try { previous = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch { /* First setup. */ }
-  const retain = (account: string, value: string, old: string | undefined) => old?.startsWith(KEYCHAIN_REF_PREFIX) && resolveSecretValue(account, old) === value ? old : storeSecretValue(account, value);
-  const toStore = JSON.parse(JSON.stringify(config)) as AppConfig;
-  toStore.ai.apiKey = retain('ai.apiKey', config.ai.apiKey, previous?.ai?.apiKey);
-  toStore.vps.apiToken = retain('vps.apiToken', config.vps.apiToken, previous?.vps?.apiToken);
-  toStore.hostinger.apiToken = retain('hostinger.apiToken', config.hostinger.apiToken, previous?.hostinger?.apiToken);
-  toStore.google.serviceAccountJson = retain('google.serviceAccountJson', config.google.serviceAccountJson, previous?.google?.serviceAccountJson);
-  for (const site of toStore.wordpressSites) {
-    const old = previous?.wordpressSites?.find(s => s.id === site.id);
-    site.username = retain(`wordpress.${site.id}.username`, site.username, old?.username);
-    site.appPassword = retain(`wordpress.${site.id}.appPassword`, site.appPassword, old?.appPassword);
-  }
-  const temporary = `${configPath}.${process.pid}.tmp`;
-  try { fs.writeFileSync(temporary, JSON.stringify(toStore, null, 2), { encoding: 'utf8', mode: 0o600 }); fs.renameSync(temporary, configPath); }
-  finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
+let configSaveInProgress = false;
+async function writeConfig(config: AppConfig): Promise<void> {
+  if (configSaveInProgress) throw new Error('Another settings update is in progress. Wait for it to finish before retrying.');
+  configSaveInProgress = true;
+  try {
+    const configPath = getConfigFilePath();
+    const toStore = JSON.parse(JSON.stringify(config)) as AppConfig;
+    [toStore.ai.apiKey, toStore.vps.apiToken, toStore.hostinger.apiToken, toStore.google.serviceAccountJson] = await Promise.all([
+      credentialStore.store('ai.apiKey', config.ai.apiKey), credentialStore.store('vps.apiToken', config.vps.apiToken),
+      credentialStore.store('hostinger.apiToken', config.hostinger.apiToken), credentialStore.store('google.serviceAccountJson', config.google.serviceAccountJson),
+    ]);
+    toStore.wordpressSites = await Promise.all(toStore.wordpressSites.map(async site => ({ ...site,
+      username: await credentialStore.store(`wordpress.${site.id}.username`, site.username),
+      appPassword: await credentialStore.store(`wordpress.${site.id}.appPassword`, site.appPassword),
+    })));
+    const temporary = `${configPath}.${process.pid}.tmp`;
+    try { fs.writeFileSync(temporary, JSON.stringify(toStore, null, 2), { encoding: 'utf8', mode: 0o600 }); fs.renameSync(temporary, configPath); }
+    finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
+  } finally { configSaveInProgress = false; }
 }
 
-function getGeminiApiKey(config: AppConfig): string {
+async function getGeminiApiKey(config: AppConfig): Promise<string> {
   const fromSettings = (config.ai?.apiKey || "").trim();
   const fromEnv = (process.env.GEMINI_API_KEY || "").trim();
 
-  // If settings point to a keychain placeholder, use the environment key if available
-  if (fromSettings.startsWith("keychain://") && fromEnv) {
-    return fromEnv;
-  }
+  return fromSettings ? credentialStore.resolve(fromSettings) : fromEnv;
+}
 
-  return fromSettings || fromEnv;
+async function resolveVpsConfig(config: AppConfig['vps']): Promise<AppConfig['vps']> {
+  return { ...config, apiToken: await credentialStore.resolve(config.apiToken) };
 }
 
 function extractJsonObject(text: string): Record<string, unknown> | null {
@@ -698,13 +611,14 @@ function getSiteFromConfig(config: AppConfig, siteId?: string): WordPressSiteCon
   return site;
 }
 
-function getWordPressAuthHeaders(site: WordPressSiteConfig): HeadersInit {
+async function getWordPressAuthHeaders(site: WordPressSiteConfig): Promise<HeadersInit> {
   if (!site.username || !site.appPassword) {
     return {};
   }
   const destination = new URL(site.baseUrl);
   if (destination.protocol !== 'https:' && !['127.0.0.1','localhost','[::1]'].includes(destination.hostname)) throw new Error('WordPress credentials require HTTPS.');
-  const token = Buffer.from(`${site.username}:${site.appPassword}`).toString("base64");
+  const [username, appPassword] = await Promise.all([credentialStore.resolve(site.username), credentialStore.resolve(site.appPassword)]);
+  const token = Buffer.from(`${username}:${appPassword}`).toString("base64");
   return { Authorization: `Basic ${token}` };
 }
 
@@ -725,7 +639,7 @@ async function fetchWordPressPosts(site: WordPressSiteConfig, perPage: number, p
     signal: AbortSignal.timeout(15_000),
     headers: {
       "Content-Type": "application/json",
-      ...getWordPressAuthHeaders(site),
+      ...await getWordPressAuthHeaders(site),
     },
   });
 
@@ -743,7 +657,7 @@ async function fetchWordPressPost(site: WordPressSiteConfig, postId: number) {
     signal: AbortSignal.timeout(15_000),
     headers: {
       "Content-Type": "application/json",
-      ...getWordPressAuthHeaders(site),
+      ...await getWordPressAuthHeaders(site),
     },
   });
 
@@ -815,7 +729,7 @@ type ServiceAccountCredentials = {
   private_key: string;
 };
 
-function loadGoogleServiceAccount(config: AppConfig): ServiceAccountCredentials {
+async function loadGoogleServiceAccount(config: AppConfig): Promise<ServiceAccountCredentials> {
   const raw = String(config.google.serviceAccountJson || "").trim();
   if (!raw) {
     throw new Error("Google service account JSON is not configured. Add it in Settings > Google.");
@@ -832,9 +746,11 @@ function loadGoogleServiceAccount(config: AppConfig): ServiceAccountCredentials 
   let parsed: any = null;
   if (raw.startsWith("{")) {
     parsed = parseCandidate(raw);
-  } else if (fs.existsSync(raw)) {
-    const fromFile = fs.readFileSync(raw, "utf-8");
-    parsed = parseCandidate(fromFile);
+  } else {
+    try {
+      const fromFile = await fs.promises.readFile(raw, { encoding: 'utf-8', signal: AbortSignal.timeout(3000) });
+      parsed = parseCandidate(fromFile);
+    } catch { throw new Error('The configured Google service-account file could not be read. Check application access and retry.'); }
   }
 
   if (!parsed || typeof parsed !== "object") {
@@ -851,7 +767,8 @@ function loadGoogleServiceAccount(config: AppConfig): ServiceAccountCredentials 
 }
 
 async function getGoogleAccessToken(config: AppConfig, scopes: string[]): Promise<string> {
-  const credentials = loadGoogleServiceAccount(config);
+  const serviceAccountJson = await credentialStore.resolve(config.google.serviceAccountJson);
+  const credentials = await loadGoogleServiceAccount({ ...config, google: { ...config.google, serviceAccountJson } });
   const now = Math.floor(Date.now() / 1000);
   const payload = {
     iss: credentials.client_email,
@@ -972,7 +889,7 @@ async function fetchWordPressPostByUrl(site: WordPressSiteConfig, url: string) {
     redirect: 'error',
     headers: {
       "Content-Type": "application/json",
-      ...getWordPressAuthHeaders(site),
+      ...await getWordPressAuthHeaders(site),
     },
   });
 
@@ -1113,7 +1030,7 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMes
 }
 
 async function fetchFromVps(config: AppConfig, relativePath: string): Promise<any> {
-  return readVpsStatus(config.vps, relativePath);
+  return readVpsStatus(await resolveVpsConfig(config.vps), relativePath);
 }
 
 function walkJsonFiles(dirPath: string, maxDepth = 3, currentDepth = 0): string[] {
@@ -1434,10 +1351,11 @@ async function startServer() {
 
   let modelCache: { key: string; at: number; models: any[] } | null = null;
   app.get("/api/models", async (_req, res) => {
-    const config = readConfig(), key = getGeminiApiKey(config);
+    const config = readConfig();
     const saved = [...new Set([config.ai.model, config.ai.fallbackModel].filter(Boolean))].map(id => ({ id, label: id, availability: 'not-verified' }));
-    if (!key) return res.json({ selectedModel: config.ai.model, fallbackModel: config.ai.fallbackModel, source: 'saved-configuration', models: saved });
     try {
+      const key = await getGeminiApiKey(config);
+      if (!key) return res.json({ selectedModel: config.ai.model, fallbackModel: config.ai.fallbackModel, source: 'saved-configuration', models: saved });
       const cacheKey = createHash('sha256').update(key).digest('hex');
       if (!modelCache || modelCache.key !== cacheKey || Date.now() - modelCache.at > 3600000) {
         const pager = await new GoogleGenAI({ apiKey: key }).models.list({ config: { pageSize: 100, abortSignal: AbortSignal.timeout(15000) } });
@@ -1511,7 +1429,7 @@ async function startServer() {
     generate: async ({ instruction, targetFile, originalContent, signal }) => {
       if (signal.aborted) throw new Error("Operation cancelled.");
       const config = readConfig();
-      const apiKey = getGeminiApiKey(config);
+      const apiKey = await getGeminiApiKey(config);
       if (!apiKey) throw new Error("Configure the AI provider before preparing a candidate.");
       const result = await generateWithModelFallback(
         new GoogleGenAI({ apiKey }), config.ai.model, config.ai.fallbackModel,
@@ -1533,10 +1451,10 @@ async function startServer() {
     res.json(redactSettings(readConfig()));
   });
 
-  registerObservationRoutes(app, { readConfig, getGoogleAccessToken });
+  registerObservationRoutes(app, { readConfig, getGoogleAccessToken, resolveVpsConfig });
   registerEvidenceRoutes(app, () => path.dirname(getConfigFilePath()), {
     generateOutput: async (item, format, language) => {
-      const config = readConfig(), apiKey = getGeminiApiKey(config);
+      const config = readConfig(), apiKey = await getGeminiApiKey(config);
       if (!apiKey) throw new Error('Configure the AI model before requesting translated or expanded drafts.');
       const result = await generateWithModelFallback(new GoogleGenAI({ apiKey }), config.ai.model, config.ai.fallbackModel,
         [{ parts: [{ text: [
@@ -1551,14 +1469,14 @@ async function startServer() {
     },
   });
 
-  app.put("/api/settings", (req, res) => {
+  app.put("/api/settings", async (req, res) => {
     try {
       if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) return res.status(400).json({ error: 'Settings must be an object.' });
       const base = readConfig();
       const incoming = mergeSettingsSecrets(base, req.body) as Partial<AppConfig>;
       if (incoming.selfModification?.workspacePath && incoming.selfModification.workspacePath !== base.selfModification.workspacePath) return res.status(400).json({ error: 'The development workspace is managed by the desktop launcher.' });
       const sanitized = sanitizeConfigInput(incoming);
-      writeConfig(sanitized);
+      await writeConfig(sanitized);
       return res.json(redactSettings(sanitized));
     } catch (error) { return res.status(400).json({ error: String(error) }); }
   });
@@ -1569,7 +1487,7 @@ async function startServer() {
     res.json({ ok: true, message: "Live display cleared. Candidate audit history is retained." });
   });
 
-  app.post("/api/connector/import", (req, res) => {
+  app.post("/api/connector/import", async (req, res) => {
     try {
       const config = readConfig();
       const requestedPath = typeof req.body?.path === "string" ? req.body.path.trim() : "";
@@ -1639,7 +1557,7 @@ async function startServer() {
         },
       });
 
-      writeConfig(nextConfig);
+      await writeConfig(nextConfig);
       return res.json({
         ok: true,
         message: `Imported connector hints from ${candidateFiles.length} JSON file(s).`,
@@ -1659,12 +1577,14 @@ async function startServer() {
     res.json({ rules: config.mcpRules || DEFAULT_RULES });
   });
 
-  app.put("/api/rules", (req, res) => {
-    const config = readConfig();
-    const rules = typeof req.body?.rules === "string" ? req.body.rules : config.mcpRules;
-    const updated = sanitizeConfigInput({ ...config, mcpRules: rules });
-    writeConfig(updated);
-    res.json({ rules: updated.mcpRules });
+  app.put("/api/rules", async (req, res) => {
+    try {
+      const config = readConfig();
+      const rules = typeof req.body?.rules === "string" ? req.body.rules : config.mcpRules;
+      const updated = sanitizeConfigInput({ ...config, mcpRules: rules });
+      await writeConfig(updated);
+      res.json({ rules: updated.mcpRules });
+    } catch { res.status(503).json({ error: 'Editorial instructions could not be saved. Existing settings remain active.' }); }
   });
 
   app.post("/api/connection/test", async (req, res) => {
@@ -1679,7 +1599,7 @@ async function startServer() {
       }
 
       if (type === "vps") {
-        const payload = await readVpsStatus(config.vps, "/api/expert/status");
+        const payload = await readVpsStatus(await resolveVpsConfig(config.vps), "/api/expert/status");
         const observation = expertRunObservation(payload);
         return res.json({ ok: true, message: "Expert status received through the read-only VPS adapter.", observation });
       }
@@ -1696,8 +1616,9 @@ async function startServer() {
         }
         const response = await fetch(config.hostinger.baseUrl, {
           method: "GET",
+          signal: AbortSignal.timeout(15000),
           headers: {
-            ...(config.hostinger.apiToken ? { Authorization: `Bearer ${config.hostinger.apiToken}` } : {}),
+            ...(config.hostinger.apiToken ? { Authorization: `Bearer ${await credentialStore.resolve(config.hostinger.apiToken)}` } : {}),
           },
         });
         return res.json({
@@ -1709,7 +1630,7 @@ async function startServer() {
       }
 
       if (type === "ai") {
-        const apiKey = getGeminiApiKey(config);
+        const apiKey = await getGeminiApiKey(config);
         if (!apiKey) {
           return res.status(400).json({
             ok: false,
@@ -1941,7 +1862,7 @@ async function startServer() {
         });
       }
 
-      const apiKey = getGeminiApiKey(config);
+      const apiKey = await getGeminiApiKey(config);
       if (!apiKey) {
         return res.status(400).json({ ok: false, message: "Gemini API key is required for semantic matching." });
       }
@@ -2103,7 +2024,7 @@ ${promptStrongList}`;
       let anchorText = String(req.body?.anchorText || "").trim() || fallbackAnchor;
       let bridgeSentence = String(req.body?.bridgeSentence || "").trim();
 
-      const apiKey = getGeminiApiKey(config);
+      const apiKey = await getGeminiApiKey(config);
       if (apiKey && (!req.body?.anchorText || !req.body?.bridgeSentence)) {
         const ai = new GoogleGenAI({ apiKey });
         const model = String(req.body?.model || "gemma-4-31b-it").trim() || "gemma-4-31b-it";
@@ -2193,7 +2114,7 @@ WEAK TARGET URL: ${targetUrl}`;
         return res.status(400).json({ error: "No content provided for review." });
       }
 
-      const apiKey = getGeminiApiKey(config);
+      const apiKey = await getGeminiApiKey(config);
       if (!apiKey) {
         return res.status(400).json({
           error: "Gemini is not configured yet. Add API key in Settings > AI Model Routing or in .env and restart.",
@@ -2337,7 +2258,7 @@ ${reviewContent}`;
         });
       }
 
-      const apiKey = getGeminiApiKey(config);
+      const apiKey = await getGeminiApiKey(config);
       if (!apiKey) {
         return res.json({
           ok: true,
@@ -2389,7 +2310,7 @@ ${reviewContent}`;
       }
 
       const config = readConfig();
-      const apiKey = getGeminiApiKey(config);
+      const apiKey = await getGeminiApiKey(config);
       if (!apiKey) {
         return res.json({
           text: "Gemini is not configured yet. Add API key in Settings > AI Model Routing or in .env, then restart the app.",
