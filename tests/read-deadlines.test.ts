@@ -99,14 +99,23 @@ test('Production GET requests settle when fetch or JSON parsing ignores abort', 
   }
 });
 
-test('the status-read deadline never silently abandons writes or unrelated AI workflows', async t => {
+test('the status-read deadline never silently abandons unrelated writes or reads', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] }); let finish!: (value: any) => void; let response!: any;
   t.mock.method(globalThis, 'fetch', async () => { response = await new Promise(resolve => { finish = resolve; }); return response; });
-  for (const [url, method] of [['/api/automations', 'POST'], ['/api/agent', 'POST'], ['/api/evidence', 'GET']]) {
+  for (const [url, method] of [['/api/automations', 'POST'], ['/api/evidence', 'GET']]) {
     let settled = false; const pending = request(url, { method }).then(value => { settled = true; return value; });
     await flush(); t.mock.timers.tick(120_000); await flush(); assert.equal(settled, false);
     finish(Response.json({ ok: true })); assert.deepEqual(await pending, { ok: true });
   }
+});
+
+test('Assistant has its own deadline through JSON parsing and retains safe error details', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] }); let calls=0;
+  t.mock.method(globalThis,'fetch',async()=>{calls++;return calls===1?{headers:new Headers({'Content-Type':'application/json'}),ok:true,json:never}:Response.json({error:'The AI provider is temporarily busy.',code:'MODEL_UNAVAILABLE',retryable:true,requestId:'check-1'},{status:503});});
+  const pending=request('/api/agent',{method:'POST'});
+  const rejected=assert.rejects(pending,/Assistant request timed out/);
+  await flush();t.mock.timers.tick(130_000);await rejected;
+  await assert.rejects(request('/api/agent',{method:'POST'}),(error:any)=>error.code==='MODEL_UNAVAILABLE'&&error.retryable===true&&error.requestId==='check-1'&&/busy/.test(error.message));
 });
 
 test('unexpected observation setup failures return a retryable response rather than escaping Express', async () => {

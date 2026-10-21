@@ -3,7 +3,7 @@ import express from "express";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { createHash, createSign } from "crypto";
+import { createHash, createSign, randomUUID } from "crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { spawn } from "child_process";
 import { registerEvidenceRoutes } from "./server/evidence";
@@ -13,9 +13,11 @@ import { capturePublicSource, formatRetainedSources, type CapturedSource } from 
 import { unicodeTokens, normalizeWordPressPost, completedGscWindow, readVpsStatus, expertRunObservation, smartRunObservation } from "./server/integrations";
 import { createRuntimeSecurity, getRuntimeIdentity } from "./server/runtime-security";
 import { readReleaseInfo } from "./server/release-info";
-import { generateWithBoundedFallback } from "./server/model-client";
+import { generateWithBoundedFallback, classifyModelError } from "./server/model-client";
+import { isAutonomousSelfModIntent } from "./server/assistant-intent";
+import { buildAssistantSystemPrompt } from "./shared/assistant-context";
 import { mergeSettingsSecrets, redactSettings, publicSites } from "./server/settings-security";
-import { createCredentialStore } from "./server/credential-store";
+import { createCredentialStore, CredentialError } from "./server/credential-store";
 
 // Global variables for DevOps and TV Newsroom Pipeline
 let currentBuildProcess: any = null;
@@ -577,30 +579,6 @@ function extractJsonObject(text: string): Record<string, unknown> | null {
 }
 
 
-function isAutonomousSelfModIntent(prompt: string): boolean {
-  const text = (prompt || "").toLowerCase();
-  if (!text.trim()) return false;
-
-  const explicitExecute = /(do it|go ahead|proceed|apply it|make the change|initiate self-mod|initiate self modification|start self-mod|start self modification)/i.test(
-    text,
-  );
-  const immediateExecute = /(now|right now|immediately|asap)/i.test(text);
-  const hasSelfTarget = /(yourself|itself|your app|app itself|azat studio|agent|this app|own ui|own features|self-mod|your (icon|icons|ui|feature|features|color|colors|code|tab|component|dashboard)|(in|the|this) (sidebar|tab|dashboard|window|placeholder|react component|component|app|codebase))/i.test(
-    text,
-  );
-  if (explicitExecute && hasSelfTarget) return true;
-
-  const hasActionVerb = /(change|modify|update|improve|fix|redesign|restyle|replace|add|remove|implement)/i.test(text);
-  if (hasSelfTarget && hasActionVerb && immediateExecute) return true;
-
-  const looksLikeCapabilityQuestion = /^\s*(can|could|are you|do you)\b/i.test(text) && text.includes("?");
-  const asksCapabilityOnly =
-    (/(can you|could you|are you able|are you capable|ability)/i.test(text) || looksLikeCapabilityQuestion) &&
-    !/(do it|do this|proceed|go ahead|apply|initiate|start now|make it now|now|immediately)/i.test(text);
-  if (asksCapabilityOnly) return false;
-
-  return hasActionVerb && hasSelfTarget;
-}
 
 function getSiteFromConfig(config: AppConfig, siteId?: string): WordPressSiteConfig {
   const resolvedId = siteId || config.activeSiteId;
@@ -994,6 +972,7 @@ function insertInternalLinkIntoContent(
   const updatedContent = `${source.slice(0, paragraphCandidate.start)}${injectedParagraph}${source.slice(paragraphCandidate.end)}`;
   return { inserted: true, updatedContent, method: "paragraph-append" };
 }
+
 
 function buildSystemPrompt(context: string | undefined, rules: string): string {
   return `You are Azat Studio Agent, an AI assistant for research, editorial workflows, and automation.
@@ -2303,6 +2282,15 @@ ${reviewContent}`;
   });
 
   app.post("/api/agent", async (req, res) => {
+    const requestId = randomUUID();
+    const operation = new AbortController();
+    const cancel = () => operation.abort();
+    const disconnected = () => { if (!res.writableEnded) cancel(); };
+    req.once('aborted', cancel); res.once('close', disconnected);
+    const timer = setTimeout(() => {
+      cancel();
+      if (!res.headersSent && !res.destroyed) res.status(504).json({ error: 'The Assistant request timed out. Your question is retained; retry when ready.', code: 'MODEL_TIMEOUT', retryable: true, requestId });
+    }, 120_000);
     try {
       const { prompt, context, parts = [] } = (req.body || {}) as AgentRequestBody;
       if (!prompt || !prompt.trim()) {
@@ -2312,9 +2300,7 @@ ${reviewContent}`;
       const config = readConfig();
       const apiKey = await getGeminiApiKey(config);
       if (!apiKey) {
-        return res.json({
-          text: "Gemini is not configured yet. Add API key in Settings > AI Model Routing or in .env, then restart the app.",
-        });
+        return res.status(503).json({ error: 'Connect the AI provider in System → Connections before asking the Assistant.', code: 'MODEL_NOT_CONFIGURED', retryable: false, requestId });
       }
 
       if (isAutonomousSelfModIntent(prompt)) {
@@ -2346,7 +2332,7 @@ ${reviewContent}`;
       const wantsScholarResearch = Boolean(
         config.research.scholarEnabled &&
           (researchFlags.scholar === true ||
-            /\b(scholar|scientific|journal|study|paper|evidence)\b/i.test(prompt)),
+            (researchFlags.scholar !== false && /\b(scholar|scientific|journal|study|paper|evidence)\b/i.test(prompt))),
       );
       const wantsNotebookResearch = Boolean(researchFlags.notebook && config.research.notebookWorkspacePath);
       const articleMode = Boolean(researchFlags.articleMode);
@@ -2388,6 +2374,7 @@ ${reviewContent}`;
         .join("\n")
         .trim();
 
+      if (operation.signal.aborted) return;
       const ai = new GoogleGenAI({ apiKey });
       const requestedModel = (config.ai.model || "gemini-3.1-flash-lite").trim();
       const fallbackModel = (config.ai.fallbackModel || "gemini-3.1-flash-lite").trim();
@@ -2398,15 +2385,16 @@ ${reviewContent}`;
         [
           {
             parts: [
-              { text: buildSystemPrompt(context, config.mcpRules || DEFAULT_RULES) },
+              { text: buildAssistantSystemPrompt(context, config.mcpRules || DEFAULT_RULES) },
               { text: researchPromptBlock },
               ...safeParts,
               { text: `User request: ${prompt}` },
             ],
           },
         ],
-        0.7,
+        0.7, 90_000, operation.signal,
       );
+      if (operation.signal.aborted || res.writableEnded || res.destroyed) return;
 
       return res.json({
         text: result.text || "No response from model.",
@@ -2420,12 +2408,13 @@ ${reviewContent}`;
         },
       });
     } catch (error) {
-      console.error("Gemini API Error:", error);
-      const detail = String(error || "").slice(0, 300);
-      return res.status(500).json({
-        error: "Failed to generate response.",
-        text: `I encountered an error while processing your request: ${detail || "unknown error"}.`,
-      });
+      if (res.writableEnded || res.destroyed) return;
+      const safe = error instanceof CredentialError ? { code: error.code, message: error.message, retryable: true } : classifyModelError(error);
+      const status = safe.code === 'MODEL_TIMEOUT' ? 504 : safe.code === 'MODEL_RATE_LIMIT' ? 429 : safe.code === 'MODEL_AUTH' || safe.code === 'MODEL_INVALID_REQUEST' ? 422 : 503;
+      console.warn('Assistant request failed', { requestId, code: safe.code });
+      return res.status(status).json({ error: safe.message, code: safe.code, retryable: safe.retryable, requestId });
+    } finally {
+      clearTimeout(timer); req.off('aborted', cancel); res.off('close', disconnected);
     }
   });
 

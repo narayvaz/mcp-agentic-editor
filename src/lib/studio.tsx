@@ -34,11 +34,12 @@ export async function request<T = any>(url: string, init?: RequestInit): Promise
   const response = await fetch(url, options); const contentType = response.headers.get('content-type') || '';
   if (!contentType.includes('application/json')) throw new Error(`This capability is not available from the running backend (HTTP ${response.status}).`);
   const data = await response.json();
-  if (!response.ok || data.ok === false) { const error: any = new Error(data.error || data.message || `Request failed (${response.status}).`); error.status = response.status; error.current = data.current; throw error; }
+  if (!response.ok || data.ok === false) { const error: any = new Error(data.error || data.message || `Request failed (${response.status}).`); error.status = response.status; error.current = data.current; error.code = data.code; error.retryable = data.retryable; error.requestId = data.requestId; throw error; }
   return data;
   };
   const pathname = new URL(url, 'http://studio.local').pathname;
   const boundedRead = (!init?.method || init.method.toUpperCase() === 'GET') && ['/api/production/status', '/api/pipeline/status', '/api/automations'].includes(pathname);
+  if (pathname === '/api/agent' && init?.method?.toUpperCase() === 'POST') return withReadDeadline(signal => read({ ...init, signal }), 130_000, 'The Assistant request timed out. Your question is retained; retry when ready.', { signal: init.signal ?? undefined });
   return boundedRead ? withReadDeadline(signal => read({ ...init, signal }), 40_000, 'The production status check timed out. Refresh to try again.', { signal: init?.signal ?? undefined }) : read(init);
 }
 export const jsonBody = (method: string, body: unknown): RequestInit => ({method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
