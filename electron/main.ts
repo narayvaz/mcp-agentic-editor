@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as net from 'node:net';
@@ -6,6 +7,7 @@ import * as os from 'node:os';
 import * as path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { createRequire } from 'node:module';
+import { releaseManifestPath, verifyReleaseArtifacts } from './release-integrity.js';
 
 const require = createRequire(import.meta.url);
 const { autoUpdater } = require('electron-updater') as typeof import('electron-updater');
@@ -13,6 +15,9 @@ const { autoUpdater } = require('electron-updater') as typeof import('electron-u
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PREFERRED_PORT = Number(process.env.PORT || 3000);
+
+// Disable HTTP cache so style changes are immediately visible on manual refresh
+app.commandLine.appendSwitch('disable-http-cache');
 
 type UpdaterStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'error';
 
@@ -36,9 +41,11 @@ const updaterState: UpdaterState = {
 
 let serverReadyPromise: Promise<string> | null = null;
 let updaterInitialized = false;
+const desktopSessionToken = randomBytes(32).toString('hex');
+let trustedOrigin = '';
 
 function getConfigFilePath() {
-  return path.join(os.homedir(), '.mcp-agentic-editor', 'config.json');
+  return path.join(process.env.AZAT_STATE_DIR || path.join(os.homedir(), '.mcp-agentic-editor'), 'config.json');
 }
 
 function readRuntimeWorkspacePath(): string {
@@ -58,15 +65,18 @@ function readRuntimeWorkspacePath(): string {
 }
 
 function resolveServerEntryPath(): { entryPath: string; source: 'workspace' | 'packaged' } {
-  const workspacePath = readRuntimeWorkspacePath();
-  if (workspacePath) {
-    const workspaceServerPath = path.join(workspacePath, 'dist-server', 'server.js');
-    if (fs.existsSync(workspaceServerPath) && fs.statSync(workspaceServerPath).isFile()) {
-      return { entryPath: workspaceServerPath, source: 'workspace' };
-    }
-  }
-
+  // The installed release never imports an editable workspace backend.
   return { entryPath: path.join(app.getAppPath(), 'dist-server', 'server.js'), source: 'packaged' };
+}
+
+function verifyInstalledBuild() {
+  const root = app.getAppPath();
+  const manifest = JSON.parse(fs.readFileSync(releaseManifestPath(app.isPackaged, root, process.resourcesPath), 'utf8'));
+  verifyReleaseArtifacts(root, manifest);
+}
+
+function assertTrustedFrame(event: Electron.IpcMainInvokeEvent) {
+  if (!trustedOrigin || !event.senderFrame || event.senderFrame !== event.sender.mainFrame || new URL(event.senderFrame.url).origin !== trustedOrigin) throw new Error('Untrusted desktop request.');
 }
 
 function ensureSafeCwd() {
@@ -134,7 +144,7 @@ function setupAutoUpdater() {
   updaterInitialized = true;
 
   autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.autoInstallOnAppQuit = false;
 
   autoUpdater.on('checking-for-update', () => {
     setUpdaterState({
@@ -176,7 +186,7 @@ function setupAutoUpdater() {
       status: 'downloaded',
       availableVersion: info.version || updaterState.availableVersion,
       progress: 100,
-      message: 'Update downloaded. Restart app to install.',
+      message: 'Download complete. Installation requires a verified app replacement.',
     });
   });
 
@@ -252,6 +262,12 @@ async function startEmbeddedServer(): Promise<string> {
       process.env.NODE_ENV = 'production';
       process.env.HOST = '127.0.0.1';
       ensureSafeCwd();
+      verifyInstalledBuild();
+      const workspace = readRuntimeWorkspacePath() || app.getAppPath();
+      process.env.AZAT_WORKSPACE_ROOT = workspace;
+      process.env.AZAT_STUDIO_SESSION_TOKEN = desktopSessionToken;
+      process.env.AZAT_BUILD_MANIFEST = releaseManifestPath(app.isPackaged, app.getAppPath(), process.resourcesPath);
+      process.env.AZAT_RUNTIME_SOURCE = app.isPackaged ? 'installed-release' : 'development-release';
       const freePort = await getFreeLocalPort(Number.isFinite(PREFERRED_PORT) ? PREFERRED_PORT : 3000);
       process.env.PORT = String(freePort);
 
@@ -261,6 +277,7 @@ async function startEmbeddedServer(): Promise<string> {
 
       const baseUrl = `http://127.0.0.1:${freePort}`;
       await waitForHealthCheck(`${baseUrl}/api/health`);
+      trustedOrigin = baseUrl;
       return baseUrl;
     })();
   }
@@ -276,39 +293,41 @@ async function createWindow() {
     width: 1200,
     height: 800,
     title: 'Azat Studio',
+    transparent: false,
+    backgroundColor: '#f3f6f8',
+    titleBarStyle: 'hidden',
+    trafficLightPosition: { x: 18, y: 18 },
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      sandbox: true,
       ...(preloadPath ? { preload: preloadPath } : {}),
     },
   });
 
-  if (process.env.NODE_ENV === 'development') {
-    await mainWindow.loadURL(`http://localhost:${PREFERRED_PORT}`);
-    mainWindow.webContents.openDevTools();
-  } else {
-    const baseUrl = await startEmbeddedServer();
-    await mainWindow.loadURL(baseUrl);
-  }
+  mainWindow.webContents.setWindowOpenHandler(({url}) => {
+    try { if (['https:', 'http:'].includes(new URL(url).protocol)) void shell.openExternal(url); } catch { /* Ignore invalid links. */ }
+    return { action: 'deny' };
+  });
+  mainWindow.webContents.on('will-navigate', (event, url) => { if (new URL(url).origin !== trustedOrigin) event.preventDefault(); });
+  mainWindow.webContents.on('will-redirect', (event, url) => { if (new URL(url).origin !== trustedOrigin) event.preventDefault(); });
+  mainWindow.webContents.on('will-attach-webview', event => event.preventDefault());
+  const baseUrl = await startEmbeddedServer();
+  await mainWindow.loadURL(baseUrl);
 
   if (isUpdaterSupported()) {
     setupAutoUpdater();
-    setTimeout(() => {
-      checkForUpdatesWithRetry(5).catch((error) => {
-        const message = isTransientUpdaterError(error)
-          ? 'GitHub update feed is temporarily unavailable after multiple attempts.'
-          : String(error);
-        setUpdaterState({ status: 'error', message });
-      });
-    }, 1200);
   }
 }
 
-ipcMain.handle('updater:get-state', async () => {
+ipcMain.handle('studio:get-session', async event => { assertTrustedFrame(event); return { token: desktopSessionToken, origin: trustedOrigin }; });
+ipcMain.handle('updater:get-state', async event => {
+  assertTrustedFrame(event);
   return updaterState;
 });
 
-ipcMain.handle('updater:check', async () => {
+ipcMain.handle('updater:check', async event => {
+  assertTrustedFrame(event);
   if (!isUpdaterSupported()) {
     return { ok: false, message: 'Updater is available only in packaged desktop builds.', state: updaterState };
   }
@@ -326,7 +345,8 @@ ipcMain.handle('updater:check', async () => {
   }
 });
 
-ipcMain.handle('updater:download', async () => {
+ipcMain.handle('updater:download', async event => {
+  assertTrustedFrame(event);
   if (!isUpdaterSupported()) {
     return { ok: false, message: 'Updater is available only in packaged desktop builds.', state: updaterState };
   }
@@ -341,7 +361,8 @@ ipcMain.handle('updater:download', async () => {
   }
 });
 
-ipcMain.handle('updater:install', async () => {
+ipcMain.handle('updater:install', async event => {
+  assertTrustedFrame(event);
   if (!isUpdaterSupported()) {
     return { ok: false, message: 'Updater is available only in packaged desktop builds.', state: updaterState };
   }
@@ -350,11 +371,7 @@ ipcMain.handle('updater:install', async () => {
     return { ok: false, message: 'No downloaded update is ready to install.', state: updaterState };
   }
 
-  setTimeout(() => {
-    autoUpdater.quitAndInstall();
-  }, 250);
-
-  return { ok: true, state: updaterState };
+  return { ok: false, message: 'Downloaded releases require complete-bundle verification and activation through the operator release controller. The running app was not replaced.', state: updaterState };
 });
 
 app.whenReady().then(() => {

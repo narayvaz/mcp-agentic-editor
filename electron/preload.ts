@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
+contextBridge.exposeInMainWorld('studioDesktop', { getSession: () => ipcRenderer.invoke('studio:get-session') });
 
 type UpdaterStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'error';
 

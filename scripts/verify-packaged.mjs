@@ -1,0 +1,16 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+import { releaseManifestPath, verifyReleaseArtifacts } from '../dist-electron/release-integrity.js';
+const require = createRequire(import.meta.url);
+const asar = require('@electron/asar');
+const bundle = path.resolve(process.argv[2] || 'release/mac-arm64/Azat Studio.app');
+const resources = path.join(bundle, 'Contents/Resources'), appRoot = path.join(resources, 'app.asar');
+if(asar.listPackage(appRoot).some(file=>/(^|\/)\.env(?:[./]|$)/.test(file)))throw new Error('Environment configuration must never be bundled.');
+const manifest = JSON.parse(fs.readFileSync(releaseManifestPath(true, appRoot, resources), 'utf8'));
+const expected = JSON.parse(fs.readFileSync('build-manifest.json', 'utf8'));
+if (JSON.stringify(manifest) !== JSON.stringify(expected)) throw new Error('Packaged and checked manifests differ.');
+verifyReleaseArtifacts(appRoot, manifest, file => asar.extractFile(appRoot, path.relative(appRoot, file)));
+const packaged = JSON.parse(asar.extractFile(appRoot, 'package.json').toString('utf8'));
+if (packaged.version !== manifest.appVersion) throw new Error('Packaged application version differs.');
+console.log(JSON.stringify({ buildId: manifest.buildId, verifiedArtifacts: Object.keys(manifest.files).length, manifestLocation: 'Contents/Resources/build-manifest.json', environmentFilesBundled: false, passed: true }));

@@ -1,80 +1,35 @@
-# Technical Documentation: Azat Studio
+# Azat Studio technical notes
 
-This document provides technical details for developers and users running Azat Studio locally on their iMac.
+## Desktop runtime
 
-## 🏗 Architecture Overview
+The Electron launcher verifies the release manifest, starts the packaged Express backend on loopback and supplies a fresh session credential through a narrow preload bridge. The installed app never imports an editable workspace backend. Open the application through `npm run dev` or its packaged app; an ordinary browser tab does not receive the desktop session.
 
-Azat Studio is a full-stack application using **Express** as the backend and **Vite** as the frontend development server.
+The React interface has Work, Evidence, Production, Audience and System areas, plus a separate Development Lab. Requests require the session and pass host/origin checks; WebSocket access is protected too. Public readiness exposes no configuration. Saved credentials are redacted from API responses, and new credentials are stored through macOS Keychain. Configuration and editorial records use the application state directory, normally `~/.mcp-agentic-editor`.
 
-### 1. Backend (server.ts)
-The backend is an Express server that handles:
-- **API Routes:** `/api/seo-stats`, `/api/wp-status`, `/api/agent`, etc.
-- **Vite Middleware:** In development mode, it uses `createViteServer` to serve the frontend.
-- **Production Serving:** In production, it serves static files from the `dist/` directory.
+## Data and external services
 
-### 2. Frontend (src/)
-The frontend is a React application built with TypeScript:
-- **Dashboard:** Real-time data visualization using `recharts`.
-- **Agent Chat:** A custom chatbot interface using `motion` for animations.
-- **Multimodal Support:** Handles file uploads (images, audio, video) and sends them to the Gemini API.
+Conversations and unsaved drafts use the desktop browser profile; evidence records and history are retained in application state. These are local stores with capacity and backup limits, not a shared newsroom database.
 
-### 3. AI Integration
-- Frontend `src/services/gemini.ts` calls the backend route `/api/agent`.
-- Backend `server.ts` uses `@google/genai` to call Gemini.
-- **Model:** `gemini-3-flash-preview`.
-- **Capabilities:** Text generation, image analysis, audio/video processing.
-- **Context:** The agent is provided with the current application state (e.g., "Currently viewing the dashboard").
+When requested, model interactions send the prompt, included conversation and selected editorial context to the configured model provider. Selected-story context can be excluded in the assistant. Article review and translated outputs also send their relevant text. Connected WordPress, Search Console and VPS requests communicate with those services. Public research retrieves bounded passages from source websites; capture is not factual verification. Avoid sending material that its intended provider should not receive.
 
-### 4. Desktop Integration (Electron)
-The application is configured to run as a native desktop app using **Electron**:
-- **Main Process:** `electron/main.ts` manages the application lifecycle and window creation.
-- **Embedded Backend:** In production desktop mode, Electron starts the bundled Express server and loads it via localhost.
-- **Development:** Uses `concurrently` to run the Vite dev server and Electron window simultaneously.
-- **Build:** Uses `electron-builder` to package the app into a macOS `.dmg` or `.app` file.
+Models are configured in Settings. Generation reports its actual responding model and has bounded fallback, timeout and cancellation behavior. No fixed model name is assumed to remain available.
 
----
+## Editorial behavior
 
-## 🛠 Development Commands
+- WordPress editing requires raw source and an expected revision. A preview-only preflight precedes an explicit save; a readback confirms the result. External simultaneous edits cannot be atomically locked.
+- Evidence links sources and claims, records revisions and corrections, and flags older dependent outputs for review. Translations require editorial parity review.
+- Search cards use actual completed-window GSC data; missing measurements remain unknown. Website health is a scoped observation, not a vulnerability or uptime audit.
+- The production observer reads supported status endpoints over the configured connection. Narration, rendering, broadcast and schedule execution are unavailable until real adapters exist.
+- Prompt recipes are saved instructions, not executable tools. Chat advice does not apply code or production changes.
 
-### Install Dependencies
-```bash
-npm install
-```
+## Isolated development and releases
 
-### Start Web Development Server
-```bash
-npm run dev
-```
-- Accessible at `http://localhost:3000`.
+Development proposals freeze their exact source changes in a private copy. Protected runtime, settings, launcher and release files cannot be edited by this workflow. Validation uses the macOS OS sandbox, rejects outside-file and network access, and requires behavioral tests, types and builds. It cannot activate or restart the app; automatic application is disabled.
 
-### Start Desktop Development (Standalone Window)
-```bash
-npm run electron:dev
-```
-- Opens the app in a dedicated desktop window on your iMac.
+The operator-only release controller retains and fingerprints complete app bundles and performs atomic promotion with the app stopped. Its installed copy lives outside editable source. Legacy 0.1.16 also depends on its configured external workspace; recovery requires that matching workspace and disabled legacy research state as well as its app bundle.
 
-### Build Native Installer (DMG)
-```bash
-npm run electron:build
-```
-- Generates a standalone installer in the `release/` folder.
+`npm run build:release` runs the required tests and builds, then records artifact hashes, source/build-input identity, toolchain information and a unique build instance. `scripts/verify-packaged.mjs` checks the actual archive content and rejects packaged environment configuration. See [release and migration instructions](docs/RELEASING.md) for GitHub assets, signing and acceptance requirements.
 
----
+## Verification boundaries
 
-## 🔒 Security & Privacy
-- **Local Run:** When running locally, your data stays on your iMac.
-- **API Keys:** The Gemini API key is managed via environment variables.
-- **No External Tracking:** The app does not track your browser history or local files unless you explicitly upload them to the agent.
-
-## 🧩 Component Documentation
-
-### AgentChat.tsx
-The core interaction component. It manages message history, file attachments, and calls the Gemini service.
-- **Props:** `context` (string), `onClose` (function).
-- **State:** `messages` (array), `input` (string), `attachments` (array).
-
-### ContentReviewer.tsx
-A specialized tool for reviewing news articles. It sends the article content to the agent for a detailed SEO and readability audit.
-
-### ToolGenerator.tsx
-A utility that allows the agent to generate new tools or features for the application by modifying the source code.
+Automated regressions and package checks do not establish complete UI coverage. Native launch, every enabled workflow, keyboard operation, draft recovery, resizing and zoom remain separate acceptance checks. The platform is a Mac desktop app; responsive layout does not establish phone or tablet device support.

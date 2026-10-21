@@ -1,4 +1,5 @@
 const { contextBridge, ipcRenderer } = require('electron');
+contextBridge.exposeInMainWorld('studioDesktop', { getSession: () => ipcRenderer.invoke('studio:get-session') });
 
 contextBridge.exposeInMainWorld('desktopUpdater', {
   getState: () => ipcRenderer.invoke('updater:get-state'),

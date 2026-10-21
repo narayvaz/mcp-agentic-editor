@@ -1,0 +1,93 @@
+name: Verify macOS candidate
+
+on:
+  workflow_call:
+    outputs:
+      artifact-id:
+        description: Immutable Actions artifact ID for the checked test package
+        value: ${{ jobs.package.outputs.artifact-id }}
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    # macos-15 is the standard Apple Silicon runner; fail if that mapping changes.
+    runs-on: macos-15
+    timeout-minutes: 40
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          architecture: arm64
+          package-manager-cache: false
+      - name: Require macOS arm64 and its sandbox mechanism
+        run: |
+          node -e "if(process.platform!=='darwin'||process.arch!=='arm64')throw Error('A native macOS arm64 runner is required')"
+          test -x /usr/bin/sandbox-exec
+          node --version
+          npm --version
+      - name: Install exactly the locked dependencies
+        run: npm ci
+      - name: Test release asset validation
+        run: node --test .github/workflows/release-assets.test.mjs
+      - name: Check types, all regressions including host sandbox tests, and build
+        # No test exclusions, sandbox fallbacks, or continue-on-error here.
+        run: npm run build:release
+      - name: Package ad-hoc signed test archives without publishing
+        env:
+          # No signing credentials exist in this job; identity '-' below is ad hoc.
+          CSC_FOR_PULL_REQUEST: 'true'
+        run: npx --no-install electron-builder --mac dmg zip --arm64 --publish never -c.mac.identity=-
+      - name: Verify the packaged app and the app inside the ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/verify-packaged.mjs 'release/mac-arm64/Azat Studio.app' > release/packaged-verification.json
+          codesign --verify --deep --strict --verbose=2 'release/mac-arm64/Azat Studio.app'
+          codesign --display --verbose=2 'release/mac-arm64/Azat Studio.app' 2>&1 | grep -Fx 'Signature=adhoc'
+          version=$(node -p 'JSON.parse(require("fs").readFileSync("package.json")).version')
+          unzip_dir="$RUNNER_TEMP/azat-zip-check"
+          mkdir "$unzip_dir"
+          ditto -x -k "release/Azat-Studio-${version}-arm64.zip" "$unzip_dir"
+          node scripts/verify-packaged.mjs "$unzip_dir/Azat Studio.app"
+          codesign --verify --deep --strict --verbose=2 "$unzip_dir/Azat Studio.app"
+          node --input-type=module - "$unzip_dir/Azat Studio.app" <<'NODE'
+          import assert from 'node:assert/strict';
+          import { fingerprintBundle } from './scripts/release-supervisor.mjs';
+          assert.equal(fingerprintBundle(process.argv[2]).bundleHash, fingerprintBundle('release/mac-arm64/Azat Studio.app').bundleHash, 'ZIP must contain the exact checked, signed app');
+          NODE
+      - name: Verify the app inside the DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p 'JSON.parse(require("fs").readFileSync("package.json")).version')
+          mount_dir="$RUNNER_TEMP/azat-dmg-check"
+          mkdir "$mount_dir"
+          hdiutil attach -readonly -nobrowse -mountpoint "$mount_dir" "release/Azat-Studio-${version}-arm64.dmg"
+          trap 'hdiutil detach "$mount_dir"' EXIT
+          node scripts/verify-packaged.mjs "$mount_dir/Azat Studio.app"
+          codesign --verify --deep --strict --verbose=2 "$mount_dir/Azat Studio.app"
+          node --input-type=module - "$mount_dir/Azat Studio.app" <<'NODE'
+          import assert from 'node:assert/strict';
+          import { fingerprintBundle } from './scripts/release-supervisor.mjs';
+          assert.equal(fingerprintBundle(process.argv[2]).bundleHash, fingerprintBundle('release/mac-arm64/Azat Studio.app').bundleHash, 'DMG must contain the exact checked, signed app');
+          NODE
+      - name: Check feed hashes and reject packaged environment files
+        run: node .github/workflows/release-assets.mjs
+      - name: Upload checked test packages and provenance only
+        id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release/checked-release/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
