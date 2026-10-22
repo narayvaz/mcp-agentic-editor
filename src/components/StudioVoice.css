@@ -1,0 +1,24 @@
+.studio-voice { border: 1px solid var(--border-color, #ccd8df); border-radius: 10px; margin-bottom: 10px; overflow: hidden; }
+.assistant-root .assistant-messages { min-height: 0; }
+.assistant-composer:has(.studio-voice) { flex-shrink: 0; max-height: 65%; overflow-y: auto; overscroll-behavior: contain; }
+.studio-voice-heading { display: flex; align-items: center; gap: 7px; width: 100%; border: 0; padding: 10px; color: inherit; background: transparent; text-align: left; cursor: pointer; font-size: 12px; }
+.studio-voice-heading > svg:last-child { margin-left: auto; }
+.studio-voice-body { padding: 0 10px 10px; display: grid; gap: 9px; }
+.studio-voice-body .local-note { font-size: 10px; line-height: 1.5; }
+.studio-voice-controls { display: flex; flex-wrap: wrap; gap: 6px; }
+.studio-voice-controls .btn { min-height: 38px; touch-action: none; user-select: none; }
+.studio-voice-task { display: grid; gap: 5px; font-size: 11px; }
+.studio-voice-task select { width: 100%; min-width: 0; font-size: 11px; }
+.studio-voice-state { font-size: 11px; min-height: 16px; color: #365d6a; }
+.studio-voice-error { font-size: 11px; line-height: 1.5; color: #9c302b; overflow-wrap: anywhere; }
+.studio-voice-transcript { max-height: 170px; overflow-y: auto; padding: 8px; background: rgba(73, 118, 140, .07); border-radius: 6px; font-size: 11px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.studio-voice-transcript p + p { margin-top: 8px; }
+.studio-voice-proposal { padding: 8px; border: 1px solid #b9ced8; border-radius: 6px; font-size: 11px; overflow-wrap: anywhere; }
+.studio-voice-proposal p { margin: 7px 0; white-space: pre-wrap; }
+.studio-voice-dot { height: 7px; width: 7px; border-radius: 50%; background: #25804b; }
+.studio-voice-minimized { display: flex; align-items: center; justify-content: space-between; padding: 0 10px 10px; gap: 8px; font-size: 10px; }
+.studio-voice-text { display: grid; gap: 5px; font-size: 11px; }
+.studio-voice-text input { flex: 1; min-width: 0; font-size: 11px; }
+.studio-voice-receipt { padding: 8px; border-left: 3px solid #25804b; background: rgba(37, 128, 75, .05); font-size: 11px; overflow-wrap: anywhere; }
+.studio-voice-receipt p { margin-top: 5px; }
+@media (max-width: 420px) { .studio-voice-controls .btn { flex: 1 1 44%; justify-content: center; font-size: 11px; } }

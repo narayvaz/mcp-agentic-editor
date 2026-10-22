@@ -20,7 +20,13 @@ The gate:
 
 CI runs for branch pushes and pull requests with `contents: read`. It cannot create a release. Actions use maintained official major versions; the dependency lock and source commit do not pin the hosted runner image or Action implementations. Review future Action/runner changes and keep the runtime architecture assertion.
 
-The latest local gate passed all **132 application tests and five release-asset tests**, including host sandbox tests, and all three builds. Strict packaged-bundle and manifest verification also passed locally. These results establish the automated boundary above; they do not complete the native acceptance matrix below.
+The earlier workspace gate passed all **132 application tests and five release-asset tests**, including host sandbox tests, and all three builds. Strict packaged-bundle and manifest verification also passed locally. These historical results establish the automated boundary above; they do not complete the native acceptance matrix below.
+
+### Agent execution candidate
+
+Version 0.3 adds the [agent runtime](AGENT_RUNTIME.md), its PostgreSQL ledger and additional regressions. The shared gate now verifies transactions, lease fencing, recovery and HTTP workflows against PostgreSQL 18 in a separate Linux job before macOS packaging. The macOS job retains the complete application and native host-sandbox tests; its database-only tests are separately covered by the preceding job. Real editorial deployment requires a durable database and the packaged/native acceptance below. A private test database or a source-backend pilot is not an installed, always-on agent service.
+
+The agent acceptance checklist adds: one public-source → evidence → HY/EN output assignment; artifact/source inspection; pause, stop and guidance; exact external-write approval; quota failure retaining work; restart without write replay; and a tested database backup/restore. Record native keyboard, narrow-window and error states for Agent tasks and the Assistant handoff. Keep agent publishing and broadcast capabilities unavailable until their separate adapters and acceptance records exist.
 
 ## Create a reviewable draft
 
@@ -31,6 +37,8 @@ Only its final draft job has `contents: write`. That job downloads the exact art
 Keep all assets together, especially the ZIP and `latest-mac.yml`. The ZIP is required by the macOS updater even if users normally install a DMG. Metadata attached to a draft is for inspection and does not establish a live stable update feed.
 
 ## Native acceptance before any installation
+
+An operator can launch an exact packaged build with isolated backend and browser state using a one-time `acceptance-launch.json` beside the real private settings. It must be an owner-only regular file with exactly `schemaVersion: 1`, the exact `buildId`, and an absolute `stateDirectory` naming an existing, owner-only canonical directory disjoint from the real profile. The launcher consumes a matching marker by renaming it to a retained receipt and labels the window **Test workspace**. Wrong-build markers are ignored; invalid matching markers abort launch. An explicit `AZAT_STATE_DIR` remains supported and also isolates Electron browser storage. Never include installation-specific markers, paths or profiles in Git or the package. The next ordinary launch uses the original profile.
 
 Record the exact build ID, source commit, macOS version, tester, date, and results. Review these operations against an isolated test state before touching real settings:
 

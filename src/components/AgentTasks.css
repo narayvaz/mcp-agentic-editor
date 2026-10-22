@@ -1,0 +1,34 @@
+.agent-tasks .agent-project-row{display:flex;align-items:flex-end;flex-wrap:wrap;gap:12px}
+.agent-tasks .agent-project-row>.field{flex:1 1 210px}
+.agent-tasks .agent-create-project{display:flex;align-items:flex-end;flex-wrap:wrap;gap:10px;flex:1 1 290px}
+.agent-tasks .agent-create-project>.field{flex:1 1 180px}
+.agent-tasks .agent-grid{display:grid;grid-template-columns:minmax(200px,.7fr) minmax(0,2fr);gap:18px;align-items:start}
+.agent-tasks .agent-grid>*{min-width:0}
+.agent-tasks .agent-run-list{max-height:460px;overflow:auto;align-content:start}
+.agent-tasks .agent-tool-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:9px}
+.agent-tasks .agent-tool{display:flex;align-items:flex-start;gap:10px;padding:12px;border:1px solid #d9e3e8;border-radius:7px;font-size:12px;min-width:0}
+.agent-tasks .agent-tool input{margin-top:4px;flex-shrink:0}
+.agent-tasks .agent-tool>span{min-width:0;display:grid;gap:5px}
+.agent-tasks .agent-tool strong,.agent-tasks .agent-tool small,.agent-tasks .agent-context,.agent-tasks .agent-run-title,.agent-tasks .agent-receipt-meta{overflow-wrap:anywhere}
+.agent-tasks .agent-tool small{font-size:12px}
+.agent-tasks textarea{width:100%;min-height:110px;max-height:380px}
+.agent-tasks .agent-context{background:#f0f6f3;border:1px solid #d3e3dc;padding:12px;border-radius:7px;font-size:12px;display:grid;gap:8px}
+.agent-tasks .agent-approval{border:2px solid #bc9047;background:#fffdf7}
+.agent-tasks .agent-change-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;min-width:0}
+.agent-tasks .agent-change-grid>*{min-width:0}
+.agent-tasks .agent-review-check{display:flex;align-items:flex-start;gap:10px;font-size:13px}
+.agent-tasks .agent-review-check input{flex-shrink:0;margin-top:4px}
+.agent-tasks .agent-receipt-meta{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:11px;color:#607682}
+.agent-tasks .agent-run-title{font-size:14px;font-weight:650}
+.agent-tasks details>summary{cursor:pointer;overflow-wrap:anywhere}
+.agent-tasks pre.code-text{margin:8px 0 0}
+.agent-tasks .agent-plan{list-style:decimal;margin:0;padding-left:24px;display:grid;gap:8px;font-size:13px;overflow-wrap:anywhere}
+.agent-tasks .agent-event-list{list-style:none;margin:0;padding:0;display:grid;gap:10px;max-height:340px;overflow:auto}
+.agent-tasks .agent-event-list li{border-left:2px solid #cbded5;padding-left:10px;font-size:12px;overflow-wrap:anywhere}
+.agent-tasks .agent-event-list time{display:block;color:#637d89;font-size:11px}
+.agent-tasks fieldset{min-width:0;margin:0;border:0;padding:0}
+.agent-tasks legend{font-size:13px;font-weight:650;padding:0 0 8px}
+.agent-tasks .agent-inline-note{font-size:12px;color:#5b7481;overflow-wrap:anywhere}
+@media(max-width:1100px){.with-assistant .agent-tasks .agent-grid,.with-assistant .agent-tasks .agent-change-grid{grid-template-columns:1fr}}
+@media(max-width:850px){.agent-tasks .agent-grid,.agent-tasks .agent-change-grid{grid-template-columns:1fr}.agent-tasks .agent-run-list{max-height:260px}}
+@media(max-width:480px){.agent-tasks .agent-project-row,.agent-tasks .agent-create-project{display:grid;grid-template-columns:minmax(0,1fr);width:100%}.agent-tasks .agent-tool-list{grid-template-columns:1fr}.agent-tasks .actions .btn{white-space:normal;text-align:left}}
