@@ -20,7 +20,13 @@ The gate:
 
 CI runs for branch pushes and pull requests with `contents: read`. It cannot create a release. Actions use maintained official major versions; the dependency lock and source commit do not pin the hosted runner image or Action implementations. Review future Action/runner changes and keep the runtime architecture assertion.
 
-The latest local gate passed all **132 application tests and five release-asset tests**, including host sandbox tests, and all three builds. Strict packaged-bundle and manifest verification also passed locally. These results establish the automated boundary above; they do not complete the native acceptance matrix below.
+The earlier workspace gate passed all **132 application tests and five release-asset tests**, including host sandbox tests, and all three builds. Strict packaged-bundle and manifest verification also passed locally. These historical results establish the automated boundary above; they do not complete the native acceptance matrix below.
+
+### Agent execution candidate
+
+Version 0.3 adds the [agent runtime](AGENT_RUNTIME.md), its PostgreSQL ledger and additional regressions. The shared gate now verifies transactions, lease fencing, recovery and HTTP workflows against PostgreSQL 18 in a separate Linux job before macOS packaging. The macOS job retains the complete application and native host-sandbox tests; its database-only tests are separately covered by the preceding job. Real editorial deployment requires a durable database and the packaged/native acceptance below. A private test database or a source-backend pilot is not an installed, always-on agent service.
+
+The agent acceptance checklist adds: one public-source → evidence → HY/EN output assignment; artifact/source inspection; pause, stop and guidance; exact external-write approval; quota failure retaining work; restart without write replay; and a tested database backup/restore. Record native keyboard, narrow-window and error states for Agent tasks and the Assistant handoff. Keep agent publishing and broadcast capabilities unavailable until their separate adapters and acceptance records exist.
 
 ## Create a reviewable draft
 

@@ -4,7 +4,7 @@ import path from 'node:path';
 import type { Request, Response, NextFunction } from 'express';
 import type { IncomingMessage } from 'node:http';
 
-export const DEFAULT_CAPABILITIES = ['read', 'settings:write', 'evidence:write', 'model:request', 'wordpress:write', 'development:propose', 'development:validate'] as const;
+export const DEFAULT_CAPABILITIES = ['read', 'settings:write', 'evidence:write', 'model:request', 'wordpress:write', 'development:propose', 'development:validate', 'agent:run', 'agent:approve'] as const;
 
 export function tokenMatches(expected: string, supplied: string): boolean {
   if (!expected || !supplied) return false;
@@ -14,6 +14,7 @@ export function tokenMatches(expected: string, supplied: string): boolean {
 
 export function requiredCapability(method: string, requestPath: string): string {
   if (method === 'GET' || method === 'HEAD') return 'read';
+  if (requestPath.startsWith('/api/agent-runtime/')) return /\/(approve|reject)$/.test(requestPath) ? 'agent:approve' : 'agent:run';
   if (requestPath === '/api/settings' || requestPath.startsWith('/api/rules') || requestPath === '/api/connector/import') return 'settings:write';
   if (/^\/api\/(wp\/post\/|seo\/inject_internal_link)/.test(requestPath)) return 'wordpress:write';
   if (/^\/api\/(evidence|questions|claims|corrections|watches|outputs)(\/|$)/.test(requestPath)) return 'evidence:write';

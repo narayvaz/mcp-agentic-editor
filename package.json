@@ -1,7 +1,7 @@
 {
   "name": "mcp-agentic-editor",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "main": "dist-electron/main.js",
   "author": "Azat Television",
@@ -20,7 +20,8 @@
     "clean": "rm -rf dist dist-server dist-electron release",
     "lint": "tsc --noEmit",
     "electron:dev": "npm run desktop:dev",
-    "electron:build": "npm run build:release && electron-builder"
+    "electron:build": "npm run build:release && electron-builder",
+    "test:agent": "node --import tsx --test tests/agent-*.test.ts"
   },
   "build": {
     "appId": "com.azat.studio",
@@ -29,7 +30,12 @@
     "directories": {
       "output": "release"
     },
-    "extraResources": [{ "from": "build-manifest.json", "to": "build-manifest.json" }],
+    "extraResources": [
+      {
+        "from": "build-manifest.json",
+        "to": "build-manifest.json"
+      }
+    ],
     "files": [
       "dist/**/*",
       "dist-server/**/*",
@@ -63,6 +69,7 @@
     "express": "^4.21.2",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
+    "pg": "^8.23.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",
@@ -74,6 +81,7 @@
   "devDependencies": {
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
+    "@types/pg": "^8.23.1",
     "autoprefixer": "^10.4.21",
     "concurrently": "^9.2.1",
     "electron": "^41.1.1",

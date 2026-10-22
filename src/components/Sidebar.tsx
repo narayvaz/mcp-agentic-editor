@@ -1,7 +1,7 @@
 import React from 'react';
 import {BriefcaseBusiness, BookOpenCheck, Radio, BarChart3, Settings2, FlaskConical, X, ArrowUpRight} from 'lucide-react';
 export const AREAS=[
-{id:'work',label:'Work',icon:BriefcaseBusiness,tabs:[{id:'dashboard',label:'Overview'},{id:'content',label:'Article review'}]},
+{id:'work',label:'Work',icon:BriefcaseBusiness,tabs:[{id:'dashboard',label:'Overview'},{id:'agent-tasks',label:'Agent tasks'},{id:'content',label:'Article review'}]},
 {id:'evidence',label:'Evidence',icon:BookOpenCheck,tabs:[{id:'evidence',label:'Story records'}]},
 {id:'production',label:'Production',icon:Radio,tabs:[{id:'newsroom',label:'Runs & outputs'},{id:'automations',label:'Schedules'}]},
 {id:'audience',label:'Audience',icon:BarChart3,tabs:[{id:'seo',label:'Search performance'}]},

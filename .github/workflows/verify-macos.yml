@@ -11,7 +11,46 @@ permissions:
   contents: read
 
 jobs:
+  agent-postgres:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: agent-test-only
+          POSTGRES_DB: azat_agent_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      AZAT_AGENT_TEST_DATABASE_URL: postgresql://postgres:agent-test-only@localhost:5432/azat_agent_test
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - run: npm ci
+      - name: Create separate service test database
+        run: |
+          node --input-type=module <<'NODE'
+          import pg from 'pg';
+          const client = new pg.Client({ connectionString: process.env.AZAT_AGENT_TEST_DATABASE_URL });
+          await client.connect();
+          try { await client.query('CREATE DATABASE azat_agent_service_test'); }
+          finally { await client.end(); }
+          NODE
+      - name: Verify agent transactions, recovery, authorization and workflows against PostgreSQL
+        run: npm run test:agent
   package:
+    needs: agent-postgres
     # macos-15 is the standard Apple Silicon runner; fail if that mapping changes.
     runs-on: macos-15
     timeout-minutes: 40
