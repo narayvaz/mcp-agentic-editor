@@ -16,7 +16,7 @@ const hash=values=>crypto.createHash('sha256').update(JSON.stringify(values)).di
 const pkg=JSON.parse(fs.readFileSync('package.json','utf8'));
 const sourceFiles={};
 function sourceVisit(relative){for(const entry of fs.readdirSync(path.join(root,relative),{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))){const rel=`${relative}/${entry.name}`;if(entry.isSymbolicLink())throw new Error('Release source inputs must not contain symlinks.');if(entry.isDirectory())sourceVisit(rel);else if(entry.isFile())sourceFiles[rel]=hash(fs.readFileSync(path.join(root,rel)));}}
-for(const dir of ['src','server','shared','electron','scripts','tests','public'])sourceVisit(dir);
+for(const dir of ['src','server','shared','electron','scripts','tests','public','build'])sourceVisit(dir);
 for(const file of ['server.ts','package.json','package-lock.json','tsconfig.json','tsconfig.electron.json','vite.config.ts','index.html'])sourceFiles[file]=hash(fs.readFileSync(file));
 const sourceHash=hash(sourceFiles);
 const builtAt=new Date().toISOString(),buildInstanceId=crypto.randomUUID();

@@ -46,6 +46,9 @@
     ],
     "mac": {
       "category": "public.productivity",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Azat Studio uses your microphone when you start live voice. Your speech is sent to Google Gemini to answer you. End voice to stop microphone access."
       },

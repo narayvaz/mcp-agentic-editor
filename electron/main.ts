@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, systemPreferences } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell, systemPreferences } from 'electron';
 import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
@@ -8,8 +8,8 @@ import * as path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { createRequire } from 'node:module';
 import { releaseManifestPath, verifyReleaseArtifacts } from './release-integrity.js';
-import { createRuntimeQuitHandler } from './runtime-lifecycle.js';
-import { createVoicePermissionHandlers } from './voice-permissions.js';
+import { createRendererUnloadHandler, registerRuntimeQuitHandler } from './runtime-lifecycle.js';
+import { createVoicePermissionHandlers, type VoicePermissionDiagnostic } from './voice-permissions.js';
 import { consumeAcceptanceProfile } from './acceptance-profile.js';
 
 const require = createRequire(import.meta.url);
@@ -331,12 +331,42 @@ async function createWindow() {
   mainWindow.webContents.on('will-navigate', (event, url) => { if (new URL(url).origin !== trustedOrigin) event.preventDefault(); });
   mainWindow.webContents.on('will-redirect', (event, url) => { if (new URL(url).origin !== trustedOrigin) event.preventDefault(); });
   mainWindow.webContents.on('will-attach-webview', event => event.preventDefault());
+  mainWindow.webContents.on('will-prevent-unload', createRendererUnloadHandler(() => {
+    if (mainWindow.isDestroyed()) return false;
+    return dialog.showMessageBoxSync(mainWindow, {
+      type: 'warning',
+      buttons: ['Keep editing', 'Discard unsaved changes and close'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+      title: 'Unsaved changes',
+      message: 'You have unsaved changes in Studio.',
+      detail: 'Keep editing to save your changes. Discarding closes this window without saving them.',
+    }) === 1;
+  }));
+  let permissionTraceCount = 0;
+  const permissionTraceProfile = acceptanceProfile;
   const microphonePermissions = createVoicePermissionHandlers({
     studioOrigin: () => trustedOrigin,
     trustedContents: () => mainWindow.isDestroyed() ? undefined : mainWindow.webContents,
     isForeground: () => !mainWindow.isDestroyed() && mainWindow.isVisible() && mainWindow.isFocused(),
     microphoneAccessGranted: () => process.platform !== 'darwin' || systemPreferences.getMediaAccessStatus('microphone') === 'granted',
     requestMicrophoneAccess: () => process.platform === 'darwin' ? systemPreferences.askForMediaAccess('microphone') : Promise.resolve(true),
+    ...(permissionTraceProfile ? {
+      microphoneAccessStatus: () => process.platform === 'darwin' ? systemPreferences.getMediaAccessStatus('microphone') : 'granted',
+      diagnostic: (event: VoicePermissionDiagnostic) => {
+        // One private, bounded acceptance receipt. Ordinary profiles never create it.
+        if (permissionTraceCount++ >= 256) return;
+        let fd: number | undefined;
+        try {
+          fd = fs.openSync(path.join(permissionTraceProfile, 'voice-permissions.ndjson'), fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND | fs.constants.O_NOFOLLOW, 0o600);
+          if (!fs.fstatSync(fd).isFile()) return;
+          fs.fchmodSync(fd, 0o600);
+          fs.writeSync(fd, JSON.stringify({ at: new Date().toISOString(), ...event }) + '\n');
+        } catch { /* Acceptance diagnostics cannot prevent app use or alter consent. */ }
+        finally { if (fd !== undefined) fs.closeSync(fd); }
+      },
+    } : {}),
   });
   mainWindow.webContents.session.setPermissionCheckHandler(microphonePermissions.check);
   mainWindow.webContents.session.setPermissionRequestHandler(microphonePermissions.request);
@@ -406,10 +436,9 @@ ipcMain.handle('updater:install', async event => {
   return { ok: false, message: 'Downloaded releases require complete-bundle verification and activation through the operator release controller. The running app was not replaced.', state: updaterState };
 });
 
-app.on('before-quit', createRuntimeQuitHandler({
+const runtimeQuit = registerRuntimeQuitHandler(app, {
   shutdown: async () => { const runtime = await embeddedRuntime; await runtime?.shutdownStudioRuntime?.(); },
-  quit: () => app.quit(),
-}));
+});
 
 app.whenReady().then(() => {
   createWindow().catch((error) => {
@@ -418,7 +447,7 @@ app.whenReady().then(() => {
   });
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (!runtimeQuit.isStopping() && BrowserWindow.getAllWindows().length === 0) {
       createWindow().catch((error) => {
         console.error('Failed to recreate app window:', error);
       });

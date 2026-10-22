@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { releaseManifestPath, verifyReleaseArtifacts } from '../dist-electron/release-integrity.js';
+import { verifyMacVoiceBundle } from './mac-voice-entitlements.mjs';
 const require = createRequire(import.meta.url);
 const asar = require('@electron/asar');
 const bundle = path.resolve(process.argv[2] || 'release/mac-arm64/Azat Studio.app');
@@ -13,4 +14,5 @@ if (JSON.stringify(manifest) !== JSON.stringify(expected)) throw new Error('Pack
 verifyReleaseArtifacts(appRoot, manifest, file => asar.extractFile(appRoot, path.relative(appRoot, file)));
 const packaged = JSON.parse(asar.extractFile(appRoot, 'package.json').toString('utf8'));
 if (packaged.version !== manifest.appVersion) throw new Error('Packaged application version differs.');
-console.log(JSON.stringify({ buildId: manifest.buildId, verifiedArtifacts: Object.keys(manifest.files).length, manifestLocation: 'Contents/Resources/build-manifest.json', environmentFilesBundled: false, passed: true }));
+const voicePermissions = process.platform === 'darwin' ? verifyMacVoiceBundle(bundle) : {};
+console.log(JSON.stringify({ buildId: manifest.buildId, verifiedArtifacts: Object.keys(manifest.files).length, manifestLocation: 'Contents/Resources/build-manifest.json', environmentFilesBundled: false, ...voicePermissions, passed: true }));

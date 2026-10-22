@@ -1,4 +1,6 @@
 .studio-voice { border: 1px solid var(--border-color, #ccd8df); border-radius: 10px; margin-bottom: 10px; overflow: hidden; }
+.assistant-root .assistant-messages { min-height: 0; }
+.assistant-composer:has(.studio-voice) { flex-shrink: 0; max-height: 65%; overflow-y: auto; overscroll-behavior: contain; }
 .studio-voice-heading { display: flex; align-items: center; gap: 7px; width: 100%; border: 0; padding: 10px; color: inherit; background: transparent; text-align: left; cursor: pointer; font-size: 12px; }
 .studio-voice-heading > svg:last-child { margin-left: auto; }
 .studio-voice-body { padding: 0 10px 10px; display: grid; gap: 9px; }

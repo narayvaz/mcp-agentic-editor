@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createVoicePermissionHandlers, type VoicePermissionDetails } from '../electron/voice-permissions.ts';
+import { createVoicePermissionHandlers, type VoicePermissionDetails, type VoicePermissionDiagnostic } from '../electron/voice-permissions.ts';
 
-function fixture() {
+function fixture(diagnostic?: (event: VoicePermissionDiagnostic) => void) {
   const state = { url: 'http://127.0.0.1:3210/', foreground: true, destroyed: false, granted: false, requests: 0 };
   const contents = { getURL: () => state.url, isDestroyed: () => state.destroyed };
   let ask: () => Promise<boolean> = async () => { state.granted = true; return true; };
@@ -10,6 +10,8 @@ function fixture() {
     studioOrigin: () => 'http://127.0.0.1:3210', trustedContents: () => contents,
     isForeground: () => state.foreground, microphoneAccessGranted: () => state.granted,
     requestMicrophoneAccess: () => { state.requests++; return ask(); },
+    diagnostic,
+    microphoneAccessStatus: () => state.granted ? 'granted' : 'not-determined',
   });
   const details: VoicePermissionDetails = { isMainFrame: true, requestingUrl: state.url, securityOrigin: 'http://127.0.0.1:3210', mediaType: 'audio', mediaTypes: ['audio'] };
   const request = (change: Partial<VoicePermissionDetails> = {}, permission = 'media', target = contents) => new Promise<boolean>(resolve => handlers.request(target, permission, resolve, { ...details, ...change }));
@@ -73,4 +75,33 @@ test('native rejection and concurrent requests cannot prompt repeatedly or grant
   f.setAsk(async () => { throw new Error('native refusal'); });
   assert.equal(await f.request(), false);
   f.setAsk(async () => true); assert.equal(await f.request(), false); // No OS grant status.
+});
+
+test('acceptance trace distinguishes policy rejection, missing native grant and native consent without recording private inputs', async () => {
+  const records: VoicePermissionDiagnostic[] = [];
+  const f = fixture(event => records.push(event));
+  assert.equal(f.handlers.check(f.contents, 'media', 'http://127.0.0.1:3210', f.details), false);
+  assert.equal(records.at(-1)?.reason, 'native-grant-missing');
+  assert.equal(records.at(-1)?.nativeStatus, 'not-determined');
+  assert.equal(records.at(-1)?.requestingOriginMatches, true);
+  assert.equal(await f.request(), true);
+  assert.deepEqual(records.map(event => event.phase), ['check', 'request', 'native-request', 'native-result']);
+  assert.equal(records.at(-1)?.decision, 'allow');
+  assert.equal(records.at(-1)?.nativeStatus, 'granted');
+  assert.equal(await f.request({ requestingUrl: 'https://private.example/secret?token=do-not-record' }), false);
+  assert.equal(records.at(-1)?.reason, 'policy-denied');
+  assert.equal(records.at(-1)?.requestingUrlMatches, false);
+  const encoded = JSON.stringify(records);
+  assert.equal(/127\.0\.0\.1|3210|private\.example|secret|do-not-record/.test(encoded), false);
+  const categories = new Set(['phase', 'decision', 'reason', 'nativeStatus']);
+  for (const event of records) for (const [key, value] of Object.entries(event)) if (!categories.has(key)) assert.equal(typeof value, 'boolean');
+});
+
+test('diagnostic failures cannot grant, revoke or prevent microphone permission callbacks', async () => {
+  const f = fixture(() => { throw new Error('diagnostic sink unavailable'); });
+  assert.equal(f.handlers.check(f.contents, 'media', 'http://127.0.0.1:3210', f.details), false);
+  assert.equal(await f.request({ isMainFrame: false }), false);
+  assert.equal(await f.request(), true);
+  assert.equal(f.handlers.check(f.contents, 'media', 'http://127.0.0.1:3210', f.details), true);
+  assert.equal(f.state.requests, 1);
 });
