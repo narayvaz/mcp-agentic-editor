@@ -99,6 +99,17 @@ export function registerAgentRuntimeRoutes(app: Express, options: AgentServiceOp
     }));
   }
   return {
+    async inspectVoiceTask(id: string) {
+      const { store } = await ready();
+      return store.getRun(id);
+    },
+    async controlVoiceTask(id: string, action: 'pause' | 'cancel', expectedRevision: number, signal: AbortSignal) {
+      signal.throwIfAborted();
+      const { runtime } = await ready();
+      signal.throwIfAborted();
+      if (action !== 'pause' && action !== 'cancel') throw new AgentError('This voice task action is unavailable.', 403, 'AGENT_TOOL_DENIED');
+      return runtime[action](id, expectedRevision);
+    },
     close() {
       if (closeTask) return closeTask;
       closing = true; clearInterval(pump);

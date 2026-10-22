@@ -2,6 +2,8 @@
 
 Studio 0.3 adds a task workspace alongside the existing advice chat. The coordinator chooses registered tools, the backend validates and authorizes each action, and PostgreSQL retains progress and receipts. Capability rollout remains incremental.
 
+Studio 0.4 adds [live voice collaboration](LIVE_VOICE.md): a spoken interface with transcripts, proposed assignment handoff and controls for one explicitly selected task. Voice uses the same durable executor and approval boundary; it does not create a second executor or add publishing permissions.
+
 ## Operator workflow
 
 1. Open **Work → Agent tasks**, create/select a project and describe the assignment. **Work on a task** in Assistant transfers its typed instruction into this workspace without sending attachments.

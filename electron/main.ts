@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, systemPreferences } from 'electron';
 import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
@@ -9,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import { createRequire } from 'node:module';
 import { releaseManifestPath, verifyReleaseArtifacts } from './release-integrity.js';
 import { createRuntimeQuitHandler } from './runtime-lifecycle.js';
+import { createVoicePermissionHandlers } from './voice-permissions.js';
 
 const require = createRequire(import.meta.url);
 const { autoUpdater } = require('electron-updater') as typeof import('electron-updater');
@@ -16,6 +17,13 @@ const { autoUpdater } = require('electron-updater') as typeof import('electron-u
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PREFERRED_PORT = Number(process.env.PORT || 3000);
+
+// An explicit backend test profile must also isolate browser drafts and chats.
+if (process.env.AZAT_STATE_DIR) {
+  const profile = path.join(path.resolve(process.env.AZAT_STATE_DIR), 'desktop-profile');
+  fs.mkdirSync(profile, { recursive: true, mode: 0o700 });
+  app.setPath('userData', profile);
+}
 
 // Disable HTTP cache so style changes are immediately visible on manual refresh
 app.commandLine.appendSwitch('disable-http-cache');
@@ -315,6 +323,15 @@ async function createWindow() {
   mainWindow.webContents.on('will-navigate', (event, url) => { if (new URL(url).origin !== trustedOrigin) event.preventDefault(); });
   mainWindow.webContents.on('will-redirect', (event, url) => { if (new URL(url).origin !== trustedOrigin) event.preventDefault(); });
   mainWindow.webContents.on('will-attach-webview', event => event.preventDefault());
+  const microphonePermissions = createVoicePermissionHandlers({
+    studioOrigin: () => trustedOrigin,
+    trustedContents: () => mainWindow.isDestroyed() ? undefined : mainWindow.webContents,
+    isForeground: () => !mainWindow.isDestroyed() && mainWindow.isVisible() && mainWindow.isFocused(),
+    microphoneAccessGranted: () => process.platform !== 'darwin' || systemPreferences.getMediaAccessStatus('microphone') === 'granted',
+    requestMicrophoneAccess: () => process.platform === 'darwin' ? systemPreferences.askForMediaAccess('microphone') : Promise.resolve(true),
+  });
+  mainWindow.webContents.session.setPermissionCheckHandler(microphonePermissions.check);
+  mainWindow.webContents.session.setPermissionRequestHandler(microphonePermissions.request);
   const baseUrl = await startEmbeddedServer();
   await mainWindow.loadURL(baseUrl);
 

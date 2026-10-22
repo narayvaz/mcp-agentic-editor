@@ -1,7 +1,7 @@
 {
   "name": "mcp-agentic-editor",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "main": "dist-electron/main.js",
   "author": "Azat Television",
@@ -46,6 +46,9 @@
     ],
     "mac": {
       "category": "public.productivity",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Azat Studio uses your microphone when you start live voice. Your speech is sent to Google Gemini to answer you. End voice to stop microphone access."
+      },
       "target": [
         "dmg",
         "zip"

@@ -10,6 +10,8 @@ import { registerEvidenceRoutes } from "./server/evidence";
 import { registerObservationRoutes, observeProduction } from "./server/observation";
 import { registerWordPressEditRoutes, createWordPressEditor } from "./server/wordpress-edit";
 import { registerAgentRuntimeRoutes } from "./server/agent-service";
+import { registerVoiceRoutes } from "./server/voice-service";
+import { createVoiceTaskBridge } from "./server/voice-task-bridge";
 import { createStudioAgentTools } from "./server/agent-tools";
 import { createAgentDecider, agentDecisionRequest, agentTextRequest, confirmAgentResponse, agentResponseMetadata } from "./server/agent-model";
 import { EvidenceStore } from "./server/evidence";
@@ -1285,10 +1287,11 @@ function formatSourcesAsPromptBlock(label: string, sources: WebSource[]): string
 }
 
 let agentRuntimeService: ReturnType<typeof registerAgentRuntimeRoutes> | undefined;
+let voiceRuntimeService: ReturnType<typeof registerVoiceRoutes> | undefined;
 let runtimeShutdownRequested = false;
 export async function shutdownStudioRuntime(): Promise<void> {
   runtimeShutdownRequested = true;
-  await agentRuntimeService?.close();
+  await Promise.allSettled([voiceRuntimeService?.close(), agentRuntimeService?.close()]);
 }
 
 async function startServer() {
@@ -1416,7 +1419,22 @@ async function startServer() {
       return input;
     },
   });
-  if (runtimeShutdownRequested) await agentRuntimeService.close();
+  voiceRuntimeService = registerVoiceRoutes(app, {
+    resolveApiKey: () => getGeminiApiKey(readConfig()),
+    isConfigured: () => Boolean(readConfig().ai.apiKey || process.env.GEMINI_API_KEY),
+    model: process.env.AZAT_VOICE_MODEL,
+    authorize: (request, action) => {
+      const caps = new Set(security.capabilities);
+      const authenticated = request.headers.upgrade?.toLowerCase() === 'websocket'
+        ? security.acceptSocket(request) : security.authenticated(request.headers);
+      return authenticated && caps.has('read') && caps.has('model:request') && (action !== 'task-control' || caps.has('agent:run'));
+    },
+    taskBridge: createVoiceTaskBridge({ capabilities: security.capabilities,
+      read: id => agentRuntimeService!.inspectVoiceTask(id),
+      control: (id, action, revision, signal) => agentRuntimeService!.controlVoiceTask(id, action, revision, signal),
+    }),
+  });
+  if (runtimeShutdownRequested) await shutdownStudioRuntime();
 
 
   app.get("/api/runtime", (_req, res) => res.json({ ...getRuntimeIdentity(runtimeRoot), capabilities: security.capabilities }));
@@ -1426,10 +1444,11 @@ async function startServer() {
     items: [
       { id: 'wordpress-review', status: 'implemented', description: 'Read and review configured WordPress drafts; verified update requires a current revision.' },
       { id: 'agent-tasks', status: 'implemented', description: 'Durable supervised assignments with scoped tools, progress, checkpoints and exact-action approvals. Requires PostgreSQL; desktop execution only in this release.' },
+      { id: 'live-voice', status: 'implemented', description: 'Gemini Live conversation in Assistant with press-to-talk, transcripts, task proposals and selected-task status/pause/cancel. Requires microphone consent and model access. External edits retain visible exact approval.' },
       { id: 'evidence', status: 'implemented', description: 'Local versioned questions, evidence, claims and correction tracking.' },
       { id: 'production-observer', status: 'implemented', description: 'Read actual Expert and Smart status through the configured secure connection.' },
       { id: 'gsc', status: 'implemented', description: 'Read configured Google Search Console data; no traffic estimates or demo defaults.' },
-      { id: 'video-production', status: 'unavailable', description: 'No verified voice/render/broadcast worker is installed in Studio.' },
+      { id: 'video-production', status: 'unavailable', description: 'No narration, render or broadcast worker is installed in Studio. Assistant voice is a private conversation.' },
       { id: 'job-execution', status: 'unavailable', description: 'Remote job execution is not enabled; existing production services remain independently operated.' },
       { id: 'self-development', status: 'proposal-only', description: 'Isolated candidates and exact-hash validation. Automatic application and restart are disabled.' },
     ],
@@ -2622,6 +2641,7 @@ ${reviewContent}`;
       try {
         if (!security.acceptSocket(request)) { socket.destroy(); return; }
         const urlObj = new URL(request.url || "", `http://${request.headers.host || "localhost"}`);
+        if (voiceRuntimeService?.handleUpgrade(request, socket, head)) return;
         if (urlObj.pathname === "/ws/status") {
           wss.handleUpgrade(request, socket, head, (ws) => {
             wss.emit("connection", ws, request);
