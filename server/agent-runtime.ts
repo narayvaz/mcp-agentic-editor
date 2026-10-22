@@ -142,6 +142,11 @@ export class AgentRuntime {
   private active = new Map<string, Owned>();
   private starts = new Map<string, Promise<AgentRun>>();
   private tail: Promise<unknown> = Promise.resolve();
+  private closing = false;
+  private shutdownTask?: Promise<void>;
+  private shutdownSettled = false;
+  private stopping = new Set<Owned>();
+  private leases = new Set<Owned>();
   private now: () => number;
   private id: () => string;
   private ttl: number;
@@ -158,6 +163,7 @@ export class AgentRuntime {
   }
   /** Resolves after a run reaches a durable wait/terminal state. Routes may detach and poll. */
   start(runId: string): Promise<AgentRun> {
+    if (this.closing) return this.store.getRun(runId);
     const existing = this.starts.get(runId);
     if (existing) return existing.then(async () => {
       const current = await this.store.getRun(runId);
@@ -169,10 +175,11 @@ export class AgentRuntime {
     return task;
   }
   private assertLease(ctx: Owned): void { if (ctx.lost || ctx.stop.signal.aborted) throw lost(); }
-  private async mutate(ctx: Owned, type: string, message: string, mutate: (run: AgentRun) => void, expectedRevision?: number): Promise<AgentRun> {
+  private async mutate(ctx: Owned, type: string, message: string, mutate: (run: AgentRun) => void, expectedRevision?: number, allowClosing = false): Promise<AgentRun> {
     this.assertLease(ctx);
+    if (this.closing && !allowClosing) throw conflict();
     try {
-      return await this.store.mutateRun(ctx.id, { lease: { owner: ctx.owner, fence: ctx.fence }, ...(expectedRevision !== undefined ? { expectedRevision } : {}), event: { type, message } }, run => { this.assertLease(ctx); mutate(run); });
+      return await this.store.mutateRun(ctx.id, { lease: { owner: ctx.owner, fence: ctx.fence }, ...(expectedRevision !== undefined ? { expectedRevision } : {}), event: { type, message } }, run => { this.assertLease(ctx); if (this.closing && !allowClosing) throw conflict(); mutate(run); });
     } catch (error) {
       if (error instanceof AgentError && error.code === 'AGENT_LEASE_LOST') this.lose(ctx);
       throw error;
@@ -185,6 +192,10 @@ export class AgentRuntime {
   }
   private owned(run: AgentRun): Owned {
     const ctx: Owned = { id: run.id, owner: run.leaseOwner!, fence: run.fence, lost: false, stop: new AbortController(), accountedAt: this.now() };
+    this.leases.add(ctx);
+    // A claim may return after the bounded shutdown sweep. It has no authority
+    // to renew its lease or report a durable pause after that budget has ended.
+    if (this.shutdownSettled) { this.lose(ctx); return ctx; }
     this.watchLease(ctx, Math.min(this.now() + this.ttl, Date.parse(run.leaseUntil!)));
     let pending = false;
     ctx.timer = setInterval(() => {
@@ -200,13 +211,15 @@ export class AgentRuntime {
   private async release(ctx: Owned): Promise<void> {
     if (ctx.timer) clearInterval(ctx.timer);
     if (ctx.expiry) clearTimeout(ctx.expiry);
-    if (!ctx.lost) await this.store.releaseRun(ctx.id, ctx.owner, ctx.fence);
+    this.leases.delete(ctx);
+    // Late claims still need fenced cleanup after shutdown revoked their authority.
+    if (!ctx.lost || this.shutdownSettled) await this.store.releaseRun(ctx.id, ctx.owner, ctx.fence);
   }
   private account(ctx: Owned, run: AgentRun): void {
     const now = this.now(); run.activeMs += Math.max(0, Math.floor(now - ctx.accountedAt)); ctx.accountedAt = now;
   }
   private remaining(run: AgentRun, ctx: Owned): number { return Math.min(MAX_ACTIVE_MS, run.limits.maxActiveMs) - run.activeMs - Math.max(0, this.now() - ctx.accountedAt); }
-  private executing(run: AgentRun): void { if (run.status !== 'running' || run.pauseRequested || run.cancelRequested) throw conflict(); }
+  private executing(run: AgentRun): void { if (this.closing || run.status !== 'running' || run.pauseRequested || run.cancelRequested) throw conflict(); }
   private supported(run: AgentRun): boolean { return run.workflowVersion === AGENT_WORKFLOW_VERSION && run.policyVersion === 1; }
   private async authorize(run: AgentRun, step: AgentStep, phase: AgentAuthorizationContext['phase']): Promise<AgentTool> {
     if (!this.supported(run)) throw denied();
@@ -226,14 +239,21 @@ export class AgentRuntime {
   }
   private async executeRun(runId: string): Promise<AgentRun> {
     const initial = await this.store.getRun(runId);
+    if (this.closing) return initial;
     if (initial.status !== 'queued' && initial.status !== 'running') return initial;
     const claimed = await this.store.claimRun(runId, this.id(), this.ttl);
     if (!claimed) return this.store.getRun(runId);
     const ctx = this.owned(claimed); this.active.set(runId, ctx);
     try {
+      // A running record acquired by a new execution has lost its original coordinator.
+      // This check also covers leases that were still live during startup recovery.
+      if (this.closing || claimed.status === 'running') return await this.mutate(ctx, 'run.recovered', 'Interrupted execution was paused before any model or tool call.', state => {
+        this.account(ctx, state); state.status = 'paused'; state.pauseRequested = true;
+        state.summary = 'Execution was interrupted. Review the retained work before resuming.';
+      }, undefined, this.closing);
       if (!this.supported(claimed)) return await this.mutate(ctx, 'run.version-unsupported', 'This retained workflow or policy version requires manual migration.', state => { state.status = 'paused'; state.pauseRequested = true; state.summary = 'This retained workflow or policy version is unsupported. Start a current run after review.'; });
       let run = await this.mutate(ctx, 'run.started', 'Agent execution started.', state => {
-        if (!['queued', 'running'].includes(state.status) || state.pauseRequested || state.cancelRequested) throw conflict();
+        if (this.closing || !['queued', 'running'].includes(state.status) || state.pauseRequested || state.cancelRequested) throw conflict();
         state.status = 'running';
       });
       if (run.steps.some(requiresReconciliation)) {
@@ -242,14 +262,14 @@ export class AgentRuntime {
       let consecutivePlans = 0;
       for (let decisions = 0; decisions < 40; decisions++) {
         this.assertLease(ctx); run = await this.store.getRun(runId);
-        if (run.status !== 'running' || run.pauseRequested || run.cancelRequested) return run;
+        if (this.closing || run.status !== 'running' || run.pauseRequested || run.cancelRequested) return run;
         if (this.remaining(run, ctx) <= 0) throw new AgentError('The run reached its active time limit.', 409, 'AGENT_LIMIT');
         const prepared = run.steps.find(step => step.status === 'prepared');
         if (prepared) { await this.executeStep(ctx, run, prepared); consecutivePlans = 0; continue; }
         const available = [...this.tools.values()].filter(tool => run.allowedTools.includes(tool.name)).map(({ name, description, inputSchema, effect }) => ({ name, description, inputSchema: clone(inputSchema), effect }));
         const decision = validateAgentDecision(await this.operation(ctx, Math.min(this.remaining(run, ctx), this.options.decisionTimeoutMs ?? 90_000), signal => this.decide(clone(run), available, signal)));
         run = await this.store.getRun(runId);
-        if (run.status !== 'running' || run.pauseRequested || run.cancelRequested) return run;
+        if (this.closing || run.status !== 'running' || run.pauseRequested || run.cancelRequested) return run;
         if (this.remaining(run, ctx) <= 0) throw new AgentError('The run reached its active time limit.', 409, 'AGENT_LIMIT');
         if (decision.kind === 'plan') {
           if (++consecutivePlans > 2) throw new AgentError('The agent did not progress beyond planning.', 409, 'AGENT_LIMIT');
@@ -275,7 +295,7 @@ export class AgentRuntime {
           if (approval) step.result = { approval: clone(approval) };
           if (Buffer.byteLength(JSON.stringify({ ...run, steps: [...run.steps, step] }), 'utf8') > 800_000) throw new AgentError('The run reached its retained data limit.', 409, 'AGENT_LIMIT');
           run = await this.mutate(ctx, 'step.prepared', approval ? 'An external action awaits exact operator approval.' : 'A tool action was durably prepared.', state => {
-            if (state.status !== 'running' || state.pauseRequested || state.cancelRequested) throw conflict();
+            if (this.closing || state.status !== 'running' || state.pauseRequested || state.cancelRequested) throw conflict();
             this.account(ctx, state); state.steps.push(step); state.summary = decision.summary;
             if (approval) { state.approval = approval; state.status = 'waiting-approval'; }
           });
@@ -284,7 +304,7 @@ export class AgentRuntime {
       }
       throw new AgentError('The run reached its decision limit.', 409, 'AGENT_LIMIT');
     } catch (error) {
-      if (ctx.lost) return this.store.getRun(runId);
+      if (ctx.lost || this.closing) return this.store.getRun(runId);
       const current = await this.store.getRun(runId);
       if (current.status !== 'running' || current.pauseRequested || current.cancelRequested) return current;
       const declaredCode = (error as { code?: unknown })?.code;
@@ -298,7 +318,7 @@ export class AgentRuntime {
       }
       return await this.mutate(ctx, 'run.failed', `Agent execution stopped (${code}).`, state => { if (state.status !== 'running' || state.pauseRequested || state.cancelRequested) return; this.account(ctx, state); state.status = 'failed'; state.summary = `Agent execution stopped (${code}). Provider details and credentials were not retained.`; });
     } finally {
-      this.active.delete(runId); await this.release(ctx);
+      this.active.delete(runId); if (!this.stopping.has(ctx)) await this.release(ctx);
     }
   }
   private async executeStep(ctx: Owned, run: AgentRun, step: AgentStep): Promise<void> {
@@ -309,7 +329,7 @@ export class AgentRuntime {
     // Set the abort target before claiming execution, so a concurrent control cannot miss an in-flight write.
     await this.operation(ctx, this.remaining(run, ctx), async signal => {
       const executing = await this.mutate(ctx, 'step.started', 'The prepared tool action started.', state => {
-        if (state.status !== 'running' || state.pauseRequested || state.cancelRequested) throw conflict();
+        if (this.closing || state.status !== 'running' || state.pauseRequested || state.cancelRequested) throw conflict();
         const retained = state.steps.find(item => item.id === step.id);
         if (!retained || retained.status !== 'prepared' || canonicalActionDigest(state, retained) !== digest) throw conflict();
         if (step.effect === 'external-write') {
@@ -328,14 +348,14 @@ export class AgentRuntime {
         if (signal.aborted) throw new Error('Interrupted');
         await this.mutate(ctx, 'step.succeeded', 'A bounded tool receipt was retained.', state => {
           const retained = state.steps.find(item => item.id === step.id);
-          if (!retained || retained.status !== 'running' || state.status !== 'running' || state.pauseRequested || state.cancelRequested) return;
+          if (this.closing || !retained || retained.status !== 'running' || state.status !== 'running' || state.pauseRequested || state.cancelRequested) return;
           this.account(ctx, state); retained.status = 'succeeded'; retained.summary = result.summary; retained.finishedAt = new Date(this.now()).toISOString();
           retained.result = { ...(step.effect === 'external-write' ? { approval: clone(state.approval) } : {}), ...(result.data !== undefined ? { data: result.data } : {}), ...(result.dataTruncated ? { dataTruncated: true } : {}) };
           for (const artifact of result.artifacts ?? []) if (!state.artifacts.some(item => item.id === artifact.id)) state.artifacts.push(artifact);
         });
       } catch (error) { throw error; }
     }).catch(async error => {
-      if (ctx.lost) throw error;
+      if (ctx.lost || this.closing) throw error;
       const stopped = await this.mutate(ctx, 'step.interrupted', 'The tool did not return a confirmed successful receipt.', state => {
         const retained = state.steps.find(item => item.id === step.id);
         if (!retained || retained.status !== 'running') return;
@@ -348,7 +368,8 @@ export class AgentRuntime {
       throw error;
     });
   }
-  private async control(id: string, work: (ctx: Owned, revision?: number) => Promise<AgentRun>, expectedRevision?: number): Promise<AgentRun> {
+  private async control(id: string, work: (ctx: Owned, revision?: number) => Promise<AgentRun>, expectedRevision?: number, allowClosing = false): Promise<AgentRun> {
+    if (this.closing && !allowClosing) throw conflict();
     if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1)) throw conflict();
     const active = this.active.get(id);
     if (active) return work(active, expectedRevision);
@@ -359,6 +380,7 @@ export class AgentRuntime {
     if (!claimed) throw conflict('Another worker owns the execution lease, or an interrupted run requires refresh.');
     const ctx = this.owned(claimed);
     try {
+      if (this.closing && !allowClosing) throw conflict();
       if (expectedRevision !== undefined && claimed.revision !== expectedRevision + 1) throw conflict();
       await work(ctx, expectedRevision === undefined ? undefined : claimed.revision);
     } finally { await this.release(ctx); }
@@ -433,10 +455,38 @@ export class AgentRuntime {
       state.approval.status = 'rejected'; step.status = 'superseded'; state.status = 'waiting-input'; state.question = 'The proposed action was rejected. Supply a new direction before continuing.';
     }, revision), expectedRevision);
   }
-  /** Startup recovery only reconciles interruption state. It never executes a retained action. */
-  async recover(): Promise<AgentRun[]> {
-    const runs = await this.store.listRuns(undefined, ['queued', 'running']), recovered: AgentRun[] = [];
+  /** Stop authority immediately; persistence and release share a bounded shutdown budget. */
+  shutdown(timeoutMs = 2000): Promise<void> {
+    if (this.shutdownTask) return this.shutdownTask;
+    this.closing = true;
+    const contexts = [...this.leases], queued = [...this.starts.keys()].filter(id => !contexts.some(ctx => ctx.id === id));
+    for (const ctx of contexts) { this.stopping.add(ctx); ctx.operation?.abort(); }
+    const pause = (ctx: Owned) => this.mutate(ctx, 'run.shutdown-paused', 'Desktop shutdown paused this task.', state => {
+      if (TERMINAL.has(state.status)) return;
+      this.account(ctx, state); state.status = 'paused'; state.pauseRequested = true;
+      state.summary = 'Desktop execution stopped. Review the retained work before resuming.';
+      for (const step of state.steps.filter(item => item.status === 'running')) {
+        step.status = step.effect === 'read' ? 'superseded' : 'uncertain';
+        step.summary = step.effect === 'read' ? 'Desktop shutdown interrupted this read.' : 'Desktop shutdown interrupted this write. Reconcile its outcome before continuing.';
+      }
+    }, undefined, true);
+    this.shutdownTask = withReadDeadline(async () => {
+      await Promise.allSettled(contexts.map(async ctx => {
+        try { await pause(ctx); } finally { await this.release(ctx); this.lose(ctx); }
+      }));
+      for (const id of queued) await this.control(id, pause, undefined, true).catch(() => {});
+    }, Math.max(1, timeoutMs), 'Agent shutdown exceeded its time limit.').catch(() => {}).finally(() => {
+      this.shutdownSettled = true;
+      for (const ctx of new Set([...contexts, ...this.leases])) { this.lose(ctx); if (ctx.timer) clearInterval(ctx.timer); if (ctx.expiry) clearTimeout(ctx.expiry); this.leases.delete(ctx); }
+    });
+    return this.shutdownTask;
+  }
+  /** Recovery only reconciles interruption state. It never executes a retained action. */
+  async recover(runningOnly = false): Promise<AgentRun[]> {
+    if (this.closing) return [];
+    const runs = await this.store.listRuns(undefined, runningOnly ? ['running'] : ['queued', 'running']), recovered: AgentRun[] = [];
     for (const run of runs) {
+      if (this.closing) break;
       if (TERMINAL.has(run.status) || this.active.has(run.id) || (run.leaseUntil && Date.parse(run.leaseUntil) > this.now())) continue;
       const claimed = await this.store.claimRun(run.id, this.id(), this.ttl);
       if (!claimed) { recovered.push(await this.store.getRun(run.id)); continue; }

@@ -11,6 +11,8 @@ import { registerAgentRuntimeRoutes, type AgentServiceOptions } from '../server/
 import { createRuntimeSecurity } from '../server/runtime-security.ts';
 import { createStudioAgentTools } from '../server/agent-tools.ts';
 import { EvidenceStore } from '../server/evidence.ts';
+import { createPostgresAgentStore } from '../server/agent-store.ts';
+import { MemoryAgentStore } from './agent-memory-store.ts';
 import { type AgentDecider, type AgentRun, type AgentTool } from '../shared/agent-contracts.ts';
 
 const token = 'b'.repeat(64), prefix = '/api/agent-runtime';
@@ -20,6 +22,7 @@ const readDecider: AgentDecider = async run => run.steps.some(step => step.statu
   ? { kind: 'finish', summary: 'Finished with a retained observation.' }
   : { kind: 'tool', tool: readTool.name, arguments: {}, summary: 'Read the fixture.' };
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+const deferred = <T = void>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; };
 
 async function application(options: AgentServiceOptions, capabilities?: string[]) {
   const app = express(), server = http.createServer(app);
@@ -33,7 +36,7 @@ async function application(options: AgentServiceOptions, capabilities?: string[]
     const response = await fetch(`http://127.0.0.1:${port}${prefix}${route}`, { method, headers: { ...(authenticated ? { Authorization: `Bearer ${token}` } : {}), ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     return { status: response.status, body: await response.json() as any };
   };
-  return { request, async close() { try { await service.close(); } finally { server.closeAllConnections(); await new Promise<void>((resolve, reject) => server.close(issue => issue ? reject(issue) : resolve())); } } };
+  return { request, stopRuntime: () => service.close(), async close() { try { await service.close(); } finally { server.closeAllConnections(); await new Promise<void>((resolve, reject) => server.close(issue => issue ? reject(issue) : resolve())); } } };
 }
 async function waitFor(app: Awaited<ReturnType<typeof application>>, id: string, predicate: (run: AgentRun) => boolean): Promise<AgentRun> {
   const deadline = Date.now() + 5000;
@@ -85,6 +88,35 @@ test('agent controls require operator capabilities independently of a model-enab
     }
     assert.equal((await app.request('/status')).status, 200);
   } finally { await app.close(); }
+});
+
+test('service shutdown is bounded even when initialization and database closure never settle', async () => {
+  const entered = deferred(); let closes = 0;
+  class HungStore extends MemoryAgentStore {
+    override async initialize(): Promise<void> { entered.resolve(); return new Promise(() => {}); }
+    override async close(): Promise<void> { closes++; return new Promise(() => {}); }
+  }
+  const store = new HungStore(), app = await application({ ...configured('postgresql://test.invalid/unused'), storeFactory: () => store, shutdownTimeoutMs: 25 });
+  const status = app.request('/status').catch(() => undefined);
+  try {
+    await entered.promise;
+    const started = Date.now(), stopped = app.stopRuntime(); assert.equal(app.stopRuntime(), stopped);
+    await stopped; assert.ok(Date.now() - started < 1000); assert.equal(closes, 1);
+    assert.equal((await app.request('/projects')).status, 503);
+  } finally { await app.close(); await status; }
+});
+
+test('late initialization after shutdown cannot create an executor', async () => {
+  const entered = deferred(), initialized = deferred(); let closes = 0, decisions = 0;
+  class LateStore extends MemoryAgentStore {
+    override async initialize() { entered.resolve(); await initialized.promise; }
+    override async close() { closes++; }
+  }
+  const app = await application({ ...configured('postgresql://test.invalid/unused'), storeFactory: () => new LateStore(), shutdownTimeoutMs: 25, decide: async () => { decisions++; return { kind: 'finish', summary: 'Must not execute.' }; } });
+  try {
+    const status = app.request('/status'); await entered.promise; await app.stopRuntime(); initialized.resolve();
+    assert.equal((await status).body.available, false); assert.equal(closes, 1); assert.equal(decisions, 0);
+  } finally { initialized.resolve(); await app.close(); }
 });
 
 const suppliedDatabase = process.env.AZAT_AGENT_TEST_DATABASE_URL;
@@ -152,6 +184,58 @@ test('registered endpoints integrate PostgreSQL, runtime decisions and approved 
         assert.equal(response.status, 503); assert.equal(response.body.code, 'AGENT_MODEL_NOT_CONFIGURED');
         const list = await app.request(`/runs?projectId=${projectId}`); assert.deepEqual(list.body.runs, []);
       } finally { await app.close(); }
+    });
+
+    await t.test('normal service shutdown pauses model work and late callbacks cannot advance a restarted task', async () => {
+      const entered = deferred(), late = deferred<any>(); let signal!: AbortSignal, reads = 0, newDecisions = 0;
+      const tools = [{ ...readTool, async execute() { reads++; return { summary: 'Must not execute.' }; } }];
+      const old = await application({ ...configured(serviceDatabase!), tools, decide: async (_run, _tools, providerSignal) => { signal = providerSignal; entered.resolve(); return late.promise; } });
+      let restarted: Awaited<ReturnType<typeof application>> | undefined;
+      try {
+        const created = await old.request('/runs', 'POST', createInput(await project(old))); await entered.promise;
+        const stopped = old.stopRuntime(); assert.equal(signal.aborted, true); await stopped;
+        restarted = await application({ ...configured(serviceDatabase!), tools, decide: async run => { newDecisions++; return readDecider(run, [], new AbortController().signal); }, pumpIntervalMs: 20 });
+        const paused = await waitFor(restarted, created.body.run.id, run => run.status === 'paused' && !run.leaseOwner);
+        assert.equal(paused.pauseRequested, true); assert.equal(paused.steps.length, 0);
+        late.resolve({ kind: 'tool', tool: readTool.name, arguments: {}, summary: 'Late action must be ignored.' }); await sleep(30);
+        assert.equal(reads, 0); assert.equal(newDecisions, 0); assert.equal((await restarted.request(`/runs/${paused.id}`)).body.run.status, 'paused');
+      } finally { late.resolve({ kind: 'finish', summary: 'Late ignored completion.' }); await restarted?.close(); await old.close(); }
+    });
+
+    await t.test('scheduler recovers a running lease that was still live when the desktop reopened', async () => {
+      const previous = createPostgresAgentStore(serviceDatabase!); await previous.initialize();
+      let decisions = 0;
+      const app = await application({ ...configured(serviceDatabase!), decide: async run => { decisions++; return readDecider(run, [], new AbortController().signal); }, pumpIntervalMs: 20 });
+      try {
+        const p = await previous.createProject(`late-expiry-${randomUUID()}`); projects.push(p.id);
+        const run = await previous.createRun(createInput(p.id)), lease = (await previous.claimRun(run.id, 'previous-desktop', 10_000))!;
+        await previous.mutateRun(run.id, { lease: { owner: lease.leaseOwner!, fence: lease.fence } }, state => { state.status = 'running'; });
+        const observed = await app.request(`/runs/${run.id}`); assert.equal(observed.body.run.status, 'running'); assert.equal(observed.body.run.leaseOwner, 'previous-desktop');
+        await admin.query("UPDATE azat_agent.runs SET lease_until=clock_timestamp()-interval '1 second' WHERE id=$1", [run.id]);
+        const paused = await waitFor(app, run.id, state => state.status === 'paused' && !state.leaseOwner);
+        assert.equal(paused.pauseRequested, true); assert.equal(decisions, 0); assert.equal(paused.steps.length, 0);
+        assert.ok((await previous.events(run.id)).some(event => event.type === 'run.recovered'));
+      } finally { await app.close(); await previous.close(); }
+    });
+
+    await t.test('a pending external approval survives graceful restart and remains gated', async () => {
+      let writes = 0;
+      const write: AgentTool = { ...readTool, name: 'fixture.external', effect: 'external-write', async execute() { writes++; return { summary: 'Confirmed after fresh approval.' }; } };
+      const decide: AgentDecider = async run => run.steps.some(step => step.status === 'succeeded') ? { kind: 'finish', summary: 'Confirmed approved change.' } : { kind: 'tool', tool: write.name, arguments: {}, summary: 'Prepare exact external action.' };
+      const first = await application({ ...configured(serviceDatabase!), tools: [write], decide });
+      let second: Awaited<ReturnType<typeof application>> | undefined;
+      try {
+        const created = await first.request('/runs', 'POST', createInput(await project(first), [write.name]));
+        const pending = await waitFor(first, created.body.run.id, run => run.status === 'waiting-approval' && !run.leaseOwner);
+        await first.stopRuntime();
+        second = await application({ ...configured(serviceDatabase!), tools: [write], decide });
+        const retained = (await second.request(`/runs/${pending.id}`)).body.run as AgentRun;
+        assert.equal(writes, 0); assert.equal(retained.revision, pending.revision); assert.deepEqual(retained.approval, pending.approval);
+        const response = await second.request(`/runs/${pending.id}/approve`, 'POST', { expectedRevision: retained.revision, approvalId: retained.approval!.id, digest: retained.approval!.digest });
+        assert.equal(response.status, 202, JSON.stringify(response.body));
+        const completed = await waitFor(second, pending.id, run => run.status === 'completed' && !run.leaseOwner);
+        assert.equal(writes, 1); assert.equal(completed.approval?.status, 'consumed');
+      } finally { await second?.close(); await first.close(); }
     });
 
     await t.test('research receipts feed unverified evidence and retained HY and EN article drafts', async () => {

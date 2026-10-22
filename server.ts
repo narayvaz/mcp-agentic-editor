@@ -1284,6 +1284,13 @@ function formatSourcesAsPromptBlock(label: string, sources: WebSource[]): string
   return sources.length ? formatRetainedSources(label, sources) : "";
 }
 
+let agentRuntimeService: ReturnType<typeof registerAgentRuntimeRoutes> | undefined;
+let runtimeShutdownRequested = false;
+export async function shutdownStudioRuntime(): Promise<void> {
+  runtimeShutdownRequested = true;
+  await agentRuntimeService?.close();
+}
+
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT || 3000);
@@ -1382,7 +1389,7 @@ async function startServer() {
     },
     production: async signal => { signal.throwIfAborted(); const config = readConfig(); const value = await observeProduction({ ...config, vps: await resolveVpsConfig(config.vps) }); signal.throwIfAborted(); return value; },
   });
-  registerAgentRuntimeRoutes(app, {
+  agentRuntimeService = registerAgentRuntimeRoutes(app, {
     databaseUrl: () => {
       if (process.env.AZAT_AGENT_DATABASE_URL) return process.env.AZAT_AGENT_DATABASE_URL;
       try {
@@ -1409,6 +1416,7 @@ async function startServer() {
       return input;
     },
   });
+  if (runtimeShutdownRequested) await agentRuntimeService.close();
 
 
   app.get("/api/runtime", (_req, res) => res.json({ ...getRuntimeIdentity(runtimeRoot), capabilities: security.capabilities }));

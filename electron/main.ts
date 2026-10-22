@@ -8,6 +8,7 @@ import * as path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { createRequire } from 'node:module';
 import { releaseManifestPath, verifyReleaseArtifacts } from './release-integrity.js';
+import { createRuntimeQuitHandler } from './runtime-lifecycle.js';
 
 const require = createRequire(import.meta.url);
 const { autoUpdater } = require('electron-updater') as typeof import('electron-updater');
@@ -40,6 +41,7 @@ const updaterState: UpdaterState = {
 };
 
 let serverReadyPromise: Promise<string> | null = null;
+let embeddedRuntime: Promise<{ shutdownStudioRuntime?: () => Promise<void> }> | undefined;
 let updaterInitialized = false;
 const desktopSessionToken = randomBytes(32).toString('hex');
 let trustedOrigin = '';
@@ -273,7 +275,8 @@ async function startEmbeddedServer(): Promise<string> {
 
       const runtimeServer = resolveServerEntryPath();
       console.log(`[embedded-server] source=${runtimeServer.source} entry=${runtimeServer.entryPath}`);
-      await import(pathToFileURL(runtimeServer.entryPath).href);
+      embeddedRuntime = import(pathToFileURL(runtimeServer.entryPath).href);
+      await embeddedRuntime;
 
       const baseUrl = `http://127.0.0.1:${freePort}`;
       await waitForHealthCheck(`${baseUrl}/api/health`);
@@ -373,6 +376,11 @@ ipcMain.handle('updater:install', async event => {
 
   return { ok: false, message: 'Downloaded releases require complete-bundle verification and activation through the operator release controller. The running app was not replaced.', state: updaterState };
 });
+
+app.on('before-quit', createRuntimeQuitHandler({
+  shutdown: async () => { const runtime = await embeddedRuntime; await runtime?.shutdownStudioRuntime?.(); },
+  quit: () => app.quit(),
+}));
 
 app.whenReady().then(() => {
   createWindow().catch((error) => {

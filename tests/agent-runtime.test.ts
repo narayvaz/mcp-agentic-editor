@@ -319,3 +319,109 @@ test('scope authorization and invalid model decisions stay fatal after adaptive 
   result = await new AgentRuntime(store, [tool('readA', 'read', async () => { throw new Error('Unavailable.'); }), alternative], sequence(action('readA'), { kind: 'tool', tool: 'readB', arguments: {}, summary: 'Invalid model decision.', authorize: true })).start(next.id);
   assert.equal(result.status, 'failed'); assert.match(result.summary, /AGENT_DECISION_INVALID/); assert.equal(alternativeCalls, 0);
 });
+
+test('a lease that expires after startup recovery pauses an orphan before any new model call', async () => {
+  for (const completedRead of [false, true]) {
+    let now = Date.now(); const { store, run } = await fixture(['read'], new MemoryAgentStore(() => now));
+    const abandoned = (await store.claimRun(run.id, 'previous-process', 1000))!;
+    await store.mutateRun(run.id, { lease: { owner: abandoned.leaseOwner!, fence: abandoned.fence } }, state => {
+      state.status = 'running';
+      if (completedRead) state.steps.push({ id: 'confirmed-before-restart', tool: 'read', arguments: {}, effect: 'read', status: 'succeeded', summary: 'Confirmed earlier read.' });
+    });
+    let decisions = 0, reads = 0;
+    const restarted = new AgentRuntime(store, [tool('read', 'read', async () => { reads++; return { summary: 'Must not run.' }; })], async () => { decisions++; return action(); }, { now: () => now });
+    await restarted.recover(); assert.equal((await store.getRun(run.id)).status, 'running');
+    now += 1001;
+    const paused = await restarted.start(run.id);
+    assert.equal(paused.status, 'paused'); assert.equal(paused.pauseRequested, true); assert.equal(paused.leaseOwner, undefined);
+    assert.equal(decisions, 0); assert.equal(reads, 0);
+    if (completedRead) assert.equal(paused.steps[0].status, 'succeeded');
+    await restarted.shutdown();
+  }
+});
+
+test('shutdown aborts the provider immediately, pauses queued starts and ignores its late action', async () => {
+  const { store, run } = await fixture(), entered = deferred(), late = deferred<AgentDecision>();
+  const next = await store.createRun({ projectId: run.projectId, threadId: 'queued-at-quit', instruction: 'Read after the first task.', allowedTools: ['read'] });
+  let decisions = 0, reads = 0, signal!: AbortSignal;
+  const runtime = new AgentRuntime(store, [tool('read', 'read', async () => { reads++; return { summary: 'Must not run.' }; })], async (_state, _tools, providerSignal) => {
+    decisions++; signal = providerSignal; entered.resolve(); return late.promise;
+  });
+  const first = runtime.start(run.id); await entered.promise; const second = runtime.start(next.id);
+  const closing = runtime.shutdown(); assert.equal(signal.aborted, true); assert.equal(runtime.shutdown(), closing);
+  await closing; await Promise.all([first, second]);
+  assert.equal((await store.getRun(run.id)).status, 'paused'); assert.equal((await store.getRun(next.id)).status, 'paused');
+  late.resolve(action()); await delay(1);
+  await runtime.start(run.id); assert.equal(decisions, 1); assert.equal(reads, 0);
+  assert.equal((await store.events(run.id)).some(event => event.type === 'step.prepared'), false);
+});
+
+test('a claim returning after shutdown cannot start a provider or a tool', async () => {
+  const claiming = deferred(), allowClaim = deferred();
+  class DelayedClaimStore extends MemoryAgentStore {
+    private delayed = false;
+    override async claimRun(id: string, owner: string, ttlMs: number) {
+      if (!this.delayed) { this.delayed = true; claiming.resolve(); await allowClaim.promise; }
+      return super.claimRun(id, owner, ttlMs);
+    }
+  }
+  const { store, run } = await fixture(['read'], new DelayedClaimStore()); let calls = 0;
+  const runtime = new AgentRuntime(store, [tool()], async () => { calls++; return action(); });
+  const execution = runtime.start(run.id); await claiming.promise;
+  await runtime.shutdown(); allowClaim.resolve();
+  assert.equal((await execution).status, 'paused'); assert.equal(calls, 0); assert.equal((await store.getRun(run.id)).leaseOwner, undefined);
+});
+
+test('a claim delivered after shutdown cannot renew or report a pause that never persisted', async () => {
+  const claiming = deferred(), allowClaim = deferred(), allowPause = deferred();
+  class LateClaimStore extends MemoryAgentStore {
+    private delayed = false;
+    heartbeats = 0;
+    pauseAttempts = 0;
+    override async claimRun(id: string, owner: string, ttlMs: number) {
+      const claimed = await super.claimRun(id, owner, ttlMs);
+      if (claimed && !this.delayed) { this.delayed = true; claiming.resolve(); await allowClaim.promise; }
+      return claimed;
+    }
+    override async mutateRun(id: string, options: AgentMutation, mutate: (run: AgentRun) => void) {
+      if (options.event?.type === 'run.recovered') { this.pauseAttempts++; await allowPause.promise; }
+      return super.mutateRun(id, options, mutate);
+    }
+    override async heartbeat(id: string, owner: string, fence: number, ttlMs: number) {
+      this.heartbeats++; return super.heartbeat(id, owner, fence, ttlMs);
+    }
+  }
+  const store = new LateClaimStore(), { run } = await fixture(['read'], store); let calls = 0;
+  const runtime = new AgentRuntime(store, [tool()], async () => { calls++; return action(); }, { leaseTtlMs: 100, heartbeatMs: 5 });
+  const execution = runtime.start(run.id); await claiming.promise;
+  try {
+    await runtime.shutdown(10); allowClaim.resolve();
+    await delay(125);
+    const retained = await store.getRun(run.id);
+    assert.equal(store.heartbeats, 0); assert.equal(store.pauseAttempts, 0); assert.equal(calls, 0);
+    assert.equal(retained.status, 'queued'); assert.equal(retained.pauseRequested, false); assert.equal(retained.leaseOwner, undefined);
+    assert.equal((await store.events(run.id)).some(event => event.type === 'run.recovered' || event.type === 'run.shutdown-paused'), false);
+  } finally { allowClaim.resolve(); allowPause.resolve(); await execution; }
+});
+
+test('shutdown is bounded when pause persistence hangs and a late write receipt cannot replace recovery', async () => {
+  const pauseEntered = deferred(), entered = deferred(), late = deferred();
+  class HungPauseStore extends MemoryAgentStore {
+    override async mutateRun(id: string, options: AgentMutation, mutate: (run: AgentRun) => void) {
+      if (options.event?.type === 'run.shutdown-paused') { pauseEntered.resolve(); return new Promise<AgentRun>(() => {}); }
+      return super.mutateRun(id, options, mutate);
+    }
+  }
+  const { store, run } = await fixture(['save'], new HungPauseStore()); let signal!: AbortSignal, writes = 0, restartedCalls = 0;
+  const runtime = new AgentRuntime(store, [tool('save', 'local-write', async context => { writes++; signal = context.signal; entered.resolve(); await late.promise; return { summary: 'Late confirmed write.' }; })], sequence(action('save'), finish));
+  const execution = runtime.start(run.id); await entered.promise;
+  const startedAt = Date.now(), closing = runtime.shutdown(25); assert.equal(signal.aborted, true); await pauseEntered.promise;
+  await closing; assert.ok(Date.now() - startedAt < 1000);
+  store.loseLease(run.id);
+  const restarted = new AgentRuntime(store, [tool('save', 'local-write')], async () => { restartedCalls++; return action('save'); });
+  const recovered = await restarted.start(run.id); assert.equal(recovered.status, 'paused'); assert.equal(recovered.steps[0].status, 'uncertain');
+  late.resolve(); await execution; await delay(1);
+  assert.equal(writes, 1); assert.equal(restartedCalls, 0); assert.equal((await store.getRun(run.id)).steps[0].status, 'uncertain');
+  assert.equal((await store.events(run.id)).some(event => event.type === 'step.succeeded'), false);
+  await restarted.shutdown();
+});

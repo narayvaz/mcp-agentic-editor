@@ -2,6 +2,7 @@ import type { Express } from 'express';
 import { AgentError, AGENT_WORKFLOW_VERSION, type AgentDecider, type AgentRun, type AgentRunInput, type AgentStore, type AgentTool } from '../shared/agent-contracts';
 import { createPostgresAgentStore } from './agent-store';
 import { AgentRuntime, type AgentAuthorizationContext } from './agent-runtime';
+import { withReadDeadline } from '../shared/deadline';
 
 export type AgentServiceOptions = {
   databaseUrl: () => string; tools: AgentTool[]; decide: AgentDecider;
@@ -9,37 +10,55 @@ export type AgentServiceOptions = {
   validateInput?: (input: AgentRunInput) => AgentRunInput;
   modelConfigured?: () => boolean;
   storeFactory?: (url: string) => AgentStore;
+  shutdownTimeoutMs?: number;
+  pumpIntervalMs?: number;
 };
 /** The desktop remains loopback-only. This service does not expose a remote listener. */
 export function registerAgentRuntimeRoutes(app: Express, options: AgentServiceOptions) {
   let service: Promise<{ store: AgentStore; runtime: AgentRuntime }> | undefined;
   let closing = false;
+  let closeTask: Promise<void> | undefined;
+  let currentStore: AgentStore | undefined, currentRuntime: AgentRuntime | undefined;
+  const closedStores = new WeakMap<AgentStore, Promise<void>>();
+  const closeStore = (store: AgentStore) => {
+    if (!closedStores.has(store)) closedStores.set(store, Promise.resolve().then(() => store.close()).catch(() => {}));
+    return closedStores.get(store)!;
+  };
   const active = new Set<string>();
   async function ready() {
     if (closing || !options.databaseUrl()) throw new AgentError('Agent tasks need a configured PostgreSQL connection. Existing chat and editing remain available.', 503, 'AGENT_NOT_CONFIGURED');
     if (!service) service = (async () => {
       const store = (options.storeFactory ?? createPostgresAgentStore)(options.databaseUrl());
+      currentStore = store;
       try {
         await store.initialize();
+        if (closing) throw new AgentError('Agent tasks are stopping.', 503, 'AGENT_NOT_CONFIGURED');
         const runtime = new AgentRuntime(store, options.tools, options.decide, { authorize: options.authorize });
+        currentRuntime = runtime;
         await runtime.recover();
+        if (closing) throw new AgentError('Agent tasks are stopping.', 503, 'AGENT_NOT_CONFIGURED');
         return { store, runtime };
-      } catch (issue) { await store.close().catch(() => {}); throw issue; }
+      } catch (issue) { await closeStore(store); throw issue; }
     })().catch(issue => { service = undefined; throw issue; });
     return service;
   }
   function dispatch(run: AgentRun, runtime: AgentRuntime) {
-    if (run.status !== 'queued' && run.status !== 'running' || active.has(run.id)) return;
+    if (closing || run.status !== 'queued' && run.status !== 'running' || active.has(run.id)) return;
     active.add(run.id);
     void runtime.start(run.id).catch(() => { /* Runtime persists safe errors; never log secret-bearing causes. */ }).finally(() => active.delete(run.id));
   }
+  let pumping = false;
   const pump = setInterval(() => {
-    if (!service || closing) return;
+    if (!service || closing || pumping) return;
+    pumping = true;
     void ready().then(async ({ store, runtime }) => {
+      if (closing) return;
+      await runtime.recover(true);
+      if (closing) return;
       const runs = await store.listRuns(undefined, ['queued', 'running']);
       for (const run of runs) dispatch(run, runtime);
-    }).catch(() => {});
-  }, 3000);
+    }).catch(() => {}).finally(() => { pumping = false; });
+  }, Math.max(10, options.pumpIntervalMs ?? 3000));
   pump.unref();
   const fail = (res: any, issue: unknown) => {
     const safe = issue instanceof AgentError ? issue : new AgentError('The agent operation could not be confirmed. Refresh the task before continuing.', 503, 'AGENT_UNAVAILABLE');
@@ -80,13 +99,22 @@ export function registerAgentRuntimeRoutes(app: Express, options: AgentServiceOp
     }));
   }
   return {
-    async close() {
+    close() {
+      if (closeTask) return closeTask;
       closing = true; clearInterval(pump);
-      if (!service) return;
-      const { store, runtime } = await service;
-      for (const id of active) await runtime.pause(id).catch(() => {});
-      // Persisted leases protect unfinished external actions if process shutdown interrupts them.
-      await store.close();
+      const limit = Math.max(1, options.shutdownTimeoutMs ?? 3000), deadline = Date.now() + limit;
+      // This call synchronously revokes runtime authority, before waiting on storage or initialization.
+      const stopped = currentRuntime?.shutdown(limit), pending = service;
+      closeTask = withReadDeadline(async () => {
+        await stopped;
+        await pending?.catch(() => {});
+        await currentRuntime?.shutdown(Math.max(1, deadline - Date.now()));
+        if (currentStore) await closeStore(currentStore);
+      }, limit, 'Agent service shutdown exceeded its time limit.').catch(() => {}).finally(() => {
+        void currentRuntime?.shutdown(1);
+        if (currentStore) void closeStore(currentStore);
+      });
+      return closeTask;
     },
   };
 }

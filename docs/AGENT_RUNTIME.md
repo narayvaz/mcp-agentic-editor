@@ -49,6 +49,7 @@ The ledger contains projects, runs, steps/artifacts/approvals within run records
 - Execution currently lives in the desktop backend. Keep Studio open. Closing or crashing stops progress; no always-on VPS executor is enabled here.
 - A database lease with a fencing token permits one active executor. Heartbeat failure stops authority; expired owners cannot commit new state.
 - On restart, interrupted work pauses for inspection. An uncertain write is never automatically repeated. Verify the local/remote outcome and begin a separate recovery task after review.
+- Normal desktop quit immediately revokes execution authority and gives persistence a bounded shutdown window. A stalled provider or database cannot trap the app in quit. Recovery also checks leases that expire after startup, before any new model or tool call.
 - A temporary model/quota failure between actions pauses the task with successful work retained. Resume after the AI connection recovers. An identical retained write is blocked from automatic repetition; an uncertain write still requires reconciliation.
 - Pause, stop and redirection cannot undo an action already sent. Such a write is labeled uncertain until reconciled.
 - Model proposals are untrusted JSON. Native JSON mode improves formatting; strict application validation still rejects malformed decisions. The existing configured fallback may be used within the same bounded request when the primary fails or returns an invalid decision. Saved model preferences are unchanged.
@@ -71,3 +72,5 @@ CI adds a PostgreSQL 18 transaction/workflow job before macOS packaging. The mac
 6. Add evaluation-driven improvement proposals and isolated validation. Installing code or changing an active service remains a separate release operation.
 
 No later capability is activated merely by being described in a task or roadmap.
+
+For the proposed MacBook, Samsung A16 and iPhone X clients, see [CROSS_DEVICE_ROLLOUT.md](CROSS_DEVICE_ROLLOUT.md). Remote clients and shared execution are subsequent work, not part of this desktop release.
