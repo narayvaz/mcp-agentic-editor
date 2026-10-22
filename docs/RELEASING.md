@@ -38,6 +38,8 @@ Keep all assets together, especially the ZIP and `latest-mac.yml`. The ZIP is re
 
 ## Native acceptance before any installation
 
+An operator can launch an exact packaged build with isolated backend and browser state using a one-time `acceptance-launch.json` beside the real private settings. It must be an owner-only regular file with exactly `schemaVersion: 1`, the exact `buildId`, and an absolute `stateDirectory` naming an existing, owner-only canonical directory disjoint from the real profile. The launcher consumes a matching marker by renaming it to a retained receipt and labels the window **Test workspace**. Wrong-build markers are ignored; invalid matching markers abort launch. An explicit `AZAT_STATE_DIR` remains supported and also isolates Electron browser storage. Never include installation-specific markers, paths or profiles in Git or the package. The next ordinary launch uses the original profile.
+
 Record the exact build ID, source commit, macOS version, tester, date, and results. Review these operations against an isolated test state before touching real settings:
 
 - Launch from the packaged app and confirm it reports the packaged backend and matching frontend/backend build identity. Test clean launch, an occupied preferred port, quit, and relaunch; a different service must not be reused as the backend.

@@ -10,6 +10,7 @@ import { createRequire } from 'node:module';
 import { releaseManifestPath, verifyReleaseArtifacts } from './release-integrity.js';
 import { createRuntimeQuitHandler } from './runtime-lifecycle.js';
 import { createVoicePermissionHandlers } from './voice-permissions.js';
+import { consumeAcceptanceProfile } from './acceptance-profile.js';
 
 const require = createRequire(import.meta.url);
 const { autoUpdater } = require('electron-updater') as typeof import('electron-updater');
@@ -17,6 +18,13 @@ const { autoUpdater } = require('electron-updater') as typeof import('electron-u
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PREFERRED_PORT = Number(process.env.PORT || 3000);
+let acceptanceProfile: string | undefined;
+if (app.isPackaged && !process.env.AZAT_STATE_DIR) {
+  const manifest = JSON.parse(fs.readFileSync(releaseManifestPath(true, app.getAppPath(), process.resourcesPath), 'utf8'));
+  const defaultStateDir = path.join(os.homedir(), '.mcp-agentic-editor');
+  acceptanceProfile = consumeAcceptanceProfile({ markerPath: path.join(defaultStateDir, 'acceptance-launch.json'), buildId: manifest.buildId, defaultStateDir });
+  if (acceptanceProfile) process.env.AZAT_STATE_DIR = acceptanceProfile;
+}
 
 // An explicit backend test profile must also isolate browser drafts and chats.
 if (process.env.AZAT_STATE_DIR) {
@@ -277,7 +285,7 @@ async function startEmbeddedServer(): Promise<string> {
       process.env.AZAT_WORKSPACE_ROOT = workspace;
       process.env.AZAT_STUDIO_SESSION_TOKEN = desktopSessionToken;
       process.env.AZAT_BUILD_MANIFEST = releaseManifestPath(app.isPackaged, app.getAppPath(), process.resourcesPath);
-      process.env.AZAT_RUNTIME_SOURCE = app.isPackaged ? 'installed-release' : 'development-release';
+      process.env.AZAT_RUNTIME_SOURCE = acceptanceProfile ? 'native-acceptance' : app.isPackaged ? 'installed-release' : 'development-release';
       const freePort = await getFreeLocalPort(Number.isFinite(PREFERRED_PORT) ? PREFERRED_PORT : 3000);
       process.env.PORT = String(freePort);
 
@@ -333,6 +341,10 @@ async function createWindow() {
   mainWindow.webContents.session.setPermissionCheckHandler(microphonePermissions.check);
   mainWindow.webContents.session.setPermissionRequestHandler(microphonePermissions.request);
   const baseUrl = await startEmbeddedServer();
+  if (acceptanceProfile) {
+    mainWindow.on('page-title-updated', event => event.preventDefault());
+    mainWindow.setTitle('Azat Studio — Test workspace');
+  }
   await mainWindow.loadURL(baseUrl);
 
   if (isUpdaterSupported()) {

@@ -33,6 +33,7 @@ function voiceWindowIsForeground() { return document.visibilityState === 'visibl
 export default function StudioVoice(props: Props) {
   const [expanded, setExpanded] = useState(false), [status, setStatus] = useState<VoiceStatus | null>(null);
   const [phase, setPhase] = useState<'idle' | 'starting' | 'ready' | 'reconnecting'>('idle');
+  const [speaking, setSpeaking] = useState(false);
   const [error, setError] = useState(''), [notice, setNotice] = useState(''), [capture, setCaptureState] = useState(false);
   const [pending, setPending] = useState<VoiceTranscript[]>([]), [proposal, setProposal] = useState('');
   const [tasks, setTasks] = useState<{ id: string; instruction: string; status: string }[]>([]), [taskId, setTaskId] = useState('');
@@ -48,6 +49,7 @@ export default function StudioVoice(props: Props) {
     if (!resource) return;
     for (const source of resource.playing) { try { source.stop(); } catch { /* already ended */ } source.disconnect(); }
     resource.playing.clear(); resource.queuedUntil = resource.context.currentTime;
+    if (mounted.current) setSpeaking(false);
   }
   function send(value: unknown, resource = resources.current) {
     if (resource?.socket?.readyState === WebSocket.OPEN) resource.socket.send(JSON.stringify(value));
@@ -179,7 +181,7 @@ export default function StudioVoice(props: Props) {
             const schedule = voicePlaybackWindow(context!.currentTime, resource.queuedUntil, samples.length / rate);
             const buffer = context!.createBuffer(1, samples.length, rate); buffer.copyToChannel(samples as Float32Array<ArrayBuffer>, 0);
             const source = context!.createBufferSource(); source.buffer = buffer; source.connect(context!.destination); resource.playing.add(source); resource.queuedUntil = schedule.end;
-            source.onended = () => { resource.playing.delete(source); source.disconnect(); }; source.start(schedule.start);
+            source.onended = () => { resource.playing.delete(source); source.disconnect(); if (valid() && !resource.playing.size) setSpeaking(false); }; source.start(schedule.start); setSpeaking(true);
           } else if (packet.type === 'interrupted') stopPlayback(resource);
           else if (packet.type === 'transcript' && ['user', 'agent'].includes(packet.role) && typeof packet.turnId === 'string' && typeof packet.text === 'string') {
             const completed = resource.transcripts.append({ role: packet.role, text: packet.text, turnId: packet.turnId, final: packet.final === true });
@@ -242,7 +244,7 @@ export default function StudioVoice(props: Props) {
         <button type="button" className="btn" onClick={() => end('Voice ended. Continue here in text or start another call.')}><PhoneOff size={14}/> End</button>
       </div>}
       {active && <div className="studio-voice-text"><label htmlFor={`voice-text-${props.threadId}`}>Type for a spoken reply</label><div className="actions"><input id={`voice-text-${props.threadId}`} value={voiceDraft} maxLength={6000} onChange={event => setVoiceDraft(event.target.value)} disabled={!ready} placeholder="Exact names or a question…" onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); sendVoiceText(); } }}/><button type="button" className="btn" disabled={!ready || !voiceDraft.trim()} onClick={sendVoiceText}>Send</button></div></div>}
-      <p className="studio-voice-state" role="status">{phase === 'starting' ? 'Connecting voice…' : phase === 'reconnecting' ? 'Reconnecting · microphone muted' : capture ? 'Microphone on · Studio receives this turn' : ready ? 'Microphone muted · press to speak' : notice}</p>
+      <p className="studio-voice-state" role="status">{phase === 'starting' ? 'Connecting voice…' : phase === 'reconnecting' ? 'Reconnecting · microphone muted' : capture ? 'Microphone on · Studio receives this turn' : speaking && ready ? 'Studio speaking · microphone muted' : ready ? 'Microphone muted · press to speak' : notice}</p>
       {error && <p role="alert" className="studio-voice-error">{error}</p>}
       {pending.length > 0 && <div className="studio-voice-transcript" aria-live="polite">{pending.map(item => <p key={`${item.role}:${item.turnId}`}><strong>{item.role === 'user' ? 'You' : 'Studio'} · live</strong><br/>{item.text}</p>)}</div>}
       {receipt && <div className="studio-voice-receipt" role="status"><strong>Studio task record · {receipt.status}</strong><p>{receipt.instruction}</p>{receipt.summary && <p>{receipt.summary}</p>}</div>}
