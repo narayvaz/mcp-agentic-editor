@@ -49,6 +49,8 @@ jobs:
           NODE
       - name: Verify agent transactions, recovery, authorization and workflows against PostgreSQL
         run: npm run test:agent
+      - name: Verify private checkpoint filesystem safeguards with synthetic fixtures
+        run: python3 -B tests/studio-recovery-baseline.test.py
   package:
     needs: agent-postgres
     # macos-15 is the standard Apple Silicon runner; fail if that mapping changes.

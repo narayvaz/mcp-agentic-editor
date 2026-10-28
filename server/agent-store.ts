@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { Pool, type PoolClient } from 'pg';
 import { AGENT_WORKFLOW_VERSION, AgentError, type AgentEvent, type AgentMutation, type AgentProject, type AgentRun, type AgentRunInput, type AgentStatus, type AgentStore } from '../shared/agent-contracts.ts';
 import { migrateAgentSchema } from './agent-migrations.ts';
+import { validateAgentCompletionContract, validateRetainedCompletionContract } from './agent-completion.ts';
+import { validAgentExecutionBinding } from './agent-executor-identity.ts';
 
 const MAX_STEPS = 20, MAX_ACTIVE_MS = 15 * 60_000, MAX_JSON_BYTES = 1_000_000;
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
@@ -57,7 +59,7 @@ function canonical(value: unknown): string {
 /** Validation runs before database access, including when the database is offline. */
 export function validateAgentRunInput(value: unknown): AgentRunInput {
   record(value, 'Run input');
-  if (Object.keys(value).some(key => !['requestId', 'projectId', 'threadId', 'instruction', 'selection', 'allowedTools'].includes(key))) invalid('Run input contains unsupported fields.');
+  if (Object.keys(value).some(key => !['requestId', 'projectId', 'threadId', 'instruction', 'selection', 'allowedTools', 'completionContract'].includes(key))) invalid('Run input contains unsupported fields.');
   const requestId = value.requestId === undefined ? undefined : uuid(value.requestId, 'requestId');
   const projectId = uuid(value.projectId, 'projectId');
   const threadId = text(value.threadId, 200, 'threadId');
@@ -76,7 +78,8 @@ export function validateAgentRunInput(value: unknown): AgentRunInput {
     if (item.language !== undefined) selection.language = text(item.language, 30, 'selection.language');
     if (item.revision !== undefined) selection.revision = typeof item.revision === 'number' ? integer(item.revision, 0, Number.MAX_SAFE_INTEGER, 'selection.revision') : text(item.revision, 200, 'selection.revision');
   }
-  const result = { projectId, threadId, instruction, allowedTools, ...(selection ? { selection } : {}), ...(requestId ? { requestId } : {}) };
+  const completionContract = value.completionContract === undefined ? undefined : validateAgentCompletionContract(value.completionContract);
+  const result = { projectId, threadId, instruction, allowedTools, ...(selection ? { selection } : {}), ...(requestId ? { requestId } : {}), ...(completionContract ? { completionContract } : {}) };
   serialized(result); return result;
 }
 
@@ -89,6 +92,7 @@ export function validateAgentRunRecord(run: AgentRun): void {
   integer(run.activeMs, 0, Number.MAX_SAFE_INTEGER, 'activeMs');
   if (typeof run.cancelRequested !== 'boolean' || typeof run.pauseRequested !== 'boolean') invalid('Run controls must be booleans.');
   text(run.summary, 30_000, 'summary', false);
+  if (run.completionContract !== undefined) validateRetainedCompletionContract(run.completionContract);
   if (run.question !== undefined) text(run.question, 10_000, 'question');
   if (!Array.isArray(run.plan) || run.plan.length > MAX_STEPS) invalid('Plan exceeds the supported step limit.');
   run.plan.forEach(item => text(item, 2000, 'Plan step'));
@@ -101,6 +105,10 @@ export function validateAgentRunRecord(run: AgentRun): void {
     if (!run.allowedTools.includes(step.tool)) invalid('Step tool is outside this run’s allowed tools.');
     if (!['read', 'local-write', 'external-write'].includes(step.effect) || !['prepared', 'running', 'succeeded', 'failed', 'uncertain', 'superseded'].includes(step.status)) invalid('Step state is not supported.');
     text(step.summary, 20_000, 'Step summary', false); record(step.arguments, 'Step arguments');
+    if (step.binding !== undefined) {
+      record(step.binding, 'Step binding');
+      if (!Number.isSafeInteger(step.binding.version) || step.binding.version < 1 || (step.binding.version === 1 && !validAgentExecutionBinding(step.binding))) invalid('Step implementation binding is invalid.');
+    }
   }
   if (!Array.isArray(run.artifacts) || run.artifacts.length > 100) invalid('Run artifacts exceed the supported limit.');
   for (const artifact of run.artifacts) {
@@ -218,7 +226,7 @@ class PostgresAgentStore implements AgentStore {
       const inserted = await client.query('INSERT INTO azat_agent.runs(id,project_id,revision,status,data,created_at,updated_at) VALUES($1,$2,$3,$4,$5::jsonb,$6,$6) ON CONFLICT (id) DO NOTHING RETURNING id', [run.id, run.projectId, run.revision, run.status, serialized(run), now]);
       if (!inserted.rowCount) {
         const existing = hydrate(await this.locked(client, run.id));
-        const retainedInput = { projectId: existing.projectId, threadId: existing.threadId, instruction: existing.instruction, selection: existing.selection, allowedTools: existing.allowedTools };
+        const retainedInput = { projectId: existing.projectId, threadId: existing.threadId, instruction: existing.instruction, selection: existing.selection, allowedTools: existing.allowedTools, completionContract: existing.completionContract };
         if (canonical(retainedInput) !== canonical(immutableInput)) throw conflict();
         return existing;
       }
@@ -267,14 +275,14 @@ class PostgresAgentStore implements AgentStore {
       else if (options.expectedRevision === undefined) throw conflict();
       const next = copy(previous); const result: unknown = mutate(next);
       if (result && typeof (result as Promise<unknown>).then === 'function') invalid('Run mutation must be synchronous.');
-      for (const field of ['id','projectId','threadId','instruction','selection','allowedTools','policyVersion','workflowVersion','createdAt','limits','revision','fence','leaseOwner','leaseUntil'] as const) {
+      for (const field of ['id','projectId','threadId','instruction','selection','allowedTools','completionContract','policyVersion','workflowVersion','createdAt','limits','revision','fence','leaseOwner','leaseUntil'] as const) {
         if (serialized({ value: next[field] }) !== serialized({ value: previous[field] })) invalid(`Run ${field} cannot be changed by a mutation.`);
       }
       if (next.activeMs < previous.activeMs) invalid('Run active time cannot decrease.');
       if (next.steps.length < previous.steps.length) invalid('Retained action history cannot be removed.');
       for (const [index, step] of previous.steps.entries()) {
         const replacement = next.steps[index];
-        if (!replacement || serialized({ id: step.id, tool: step.tool, arguments: step.arguments, effect: step.effect }) !== serialized({ id: replacement.id, tool: replacement.tool, arguments: replacement.arguments, effect: replacement.effect })) invalid('Retained action identity and arguments cannot be changed.');
+        if (!replacement || serialized({ id: step.id, tool: step.tool, arguments: step.arguments, effect: step.effect, binding: step.binding }) !== serialized({ id: replacement.id, tool: replacement.tool, arguments: replacement.arguments, effect: replacement.effect, binding: replacement.binding })) invalid('Retained action identity, implementation and arguments cannot be changed.');
         if (['succeeded', 'failed', 'uncertain', 'superseded'].includes(step.status) && ['prepared', 'running'].includes(replacement.status)) invalid('A retained action cannot be replayed.');
       }
       if ((previous.directives ?? []).some((directive, index) => serialized(directive) !== serialized(next.directives?.[index]))) invalid('Retained directives cannot be changed or removed.');

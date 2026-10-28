@@ -4,20 +4,24 @@ export type AgentStatus = 'queued' | 'running' | 'waiting-approval' | 'waiting-i
 export type AgentSelection = { kind: 'wordpress' | 'evidence'; id: string; siteId?: string; title: string; revision?: string | number; language?: string };
 export type AgentProject = { id: string; name: string; createdAt: string };
 export type AgentArtifact = { id: string; kind: 'evidence' | 'draft' | 'report' | 'wordpress'; title: string; resourceId: string; revision?: string | number; siteId?: string; language?: string };
-export type AgentStep = { id: string; tool: string; arguments: Record<string, unknown>; effect: 'read' | 'local-write' | 'external-write'; status: 'prepared' | 'running' | 'succeeded' | 'failed' | 'uncertain' | 'superseded'; summary: string; result?: unknown; startedAt?: string; finishedAt?: string };
+/** Opt-in delivery requirements. These prove retained artifact receipts, not editorial/content correctness. */
+export type AgentCompletionContract = { version: 1; requiredArtifacts: { kind: AgentArtifact['kind']; minCount: number; language?: string }[] };
+export type AgentExecutionBinding = { version: 1; executorIdentity: string; toolSchemaHash: string };
+export type AgentStep = { id: string; tool: string; arguments: Record<string, unknown>; effect: 'read' | 'local-write' | 'external-write'; binding?: AgentExecutionBinding; status: 'prepared' | 'running' | 'succeeded' | 'failed' | 'uncertain' | 'superseded'; summary: string; result?: unknown; startedAt?: string; finishedAt?: string };
 export type AgentApproval = { id: string; stepId: string; digest: string; expiresAt: string; status: 'pending' | 'approved' | 'rejected' | 'consumed'; summary: string };
 export type AgentEvent = { id: string; runId: string; revision: number; type: string; message: string; createdAt: string };
 export type AgentRun = {
   id: string; projectId: string; threadId: string; instruction: string; selection?: AgentSelection;
   allowedTools: string[]; policyVersion: number; workflowVersion: number; status: AgentStatus; revision: number;
   plan: string[]; steps: AgentStep[]; artifacts: AgentArtifact[]; approval?: AgentApproval;
+  completionContract?: AgentCompletionContract;
   summary: string; question?: string; createdAt: string; updatedAt: string;
   directives?: { id: string; instruction: string; createdAt: string }[];
   limits: { maxSteps: number; maxActiveMs: number }; activeMs: number;
   cancelRequested: boolean; pauseRequested: boolean;
   leaseOwner?: string; leaseUntil?: string; fence: number;
 };
-export type AgentRunInput = { requestId?: string; projectId: string; threadId: string; instruction: string; selection?: AgentSelection; allowedTools: string[] };
+export type AgentRunInput = { requestId?: string; projectId: string; threadId: string; instruction: string; selection?: AgentSelection; allowedTools: string[]; completionContract?: AgentCompletionContract };
 export type AgentMutation = { expectedRevision?: number; lease?: { owner: string; fence: number }; event?: { type: string; message: string } };
 export interface AgentStore {
   initialize(): Promise<void>;

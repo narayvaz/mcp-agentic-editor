@@ -52,6 +52,19 @@ async function waitFor(app: Awaited<ReturnType<typeof application>>, id: string,
 const createInput = (projectId: string, allowedTools = [readTool.name]) => ({ requestId: randomUUID(), projectId, threadId: randomUUID(), instruction: 'Read deterministic evidence and complete the assignment.', allowedTools });
 const configured = (databaseUrl: string): AgentServiceOptions => ({ databaseUrl: () => databaseUrl, tools: [readTool], decide: readDecider, modelConfigured: () => true });
 
+test('unidentified production executor refuses initialization and model calls before opening storage', async () => {
+  let factories = 0, modelCalls = 0;
+  const app = await application({ ...configured('postgresql:///fixture_not_opened'), requireExecutionBinding: true,
+    storeFactory: () => { factories++; return new MemoryAgentStore(); }, decide: async () => { modelCalls++; return { kind: 'finish', summary: 'Must not run.' }; } });
+  try {
+    const status = await app.request('/status');
+    assert.equal(status.body.available, false); assert.match(status.body.reason, /identified, verified/);
+    const project = await app.request('/projects', 'POST', { name: 'Must not create' });
+    assert.equal(project.status, 503); assert.equal(project.body.code, 'AGENT_EXECUTOR_UNIDENTIFIED');
+    assert.equal(factories, 0); assert.equal(modelCalls, 0);
+  } finally { await app.close(); }
+});
+
 test('unconfigured service reports unavailable status and refuses durable actions without a fallback', async () => {
   let factories = 0;
   const app = await application({ ...configured(''), storeFactory: () => { factories++; throw new Error('A fallback must never be constructed.'); } });

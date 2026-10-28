@@ -99,6 +99,23 @@ test('PostgreSQL durable ledger and fenced execution', { skip: databaseUrl ? fal
       assert.equal((await store.listRuns(project.id)).filter(run => run.id === request.requestId).length, 1);
     });
 
+    await t.test('completion contracts persist, bind repeated requests and cannot be weakened by mutation', async () => {
+      const completionContract = { version: 1 as const, requiredArtifacts: [{ kind: 'report' as const, minCount: 2, language: 'hy' }] };
+      const request: AgentRunInput = { ...input(project.id), requestId: randomUUID(), completionContract };
+      const run = await store.createRun(request);
+      assert.deepEqual((await other.getRun(run.id)).completionContract, completionContract);
+      assert.deepEqual(await other.createRun(structuredClone(request)), run);
+      for (const changed of [undefined, { ...completionContract, requiredArtifacts: [{ ...completionContract.requiredArtifacts[0], minCount: 1 }] }]) {
+        await assert.rejects(other.createRun({ ...request, completionContract: changed }), code('AGENT_CONFLICT'));
+        await assert.rejects(store.mutateRun(run.id, { expectedRevision: run.revision }, next => { next.completionContract = changed; }), code('AGENT_VALIDATION'));
+      }
+      assert.deepEqual(await other.getRun(run.id), run);
+      const legacy = await store.createRun({ ...input(project.id), requestId: randomUUID() });
+      await assert.rejects(other.createRun({ ...input(project.id), requestId: legacy.id, completionContract }), code('AGENT_CONFLICT'));
+      await assert.rejects(store.mutateRun(legacy.id, { expectedRevision: legacy.revision }, next => { next.completionContract = completionContract; }), code('AGENT_VALIDATION'));
+      assert.equal((await other.getRun(legacy.id)).completionContract, undefined);
+    });
+
     await t.test('global lease serializes different runs and fences heartbeat, mutation and release', async () => {
       const a = await store.createRun(input(project.id)), b = await store.createRun(input(project.id));
       const claims = await Promise.all([store.claimRun(a.id, 'worker-a', 10_000), other.claimRun(b.id, 'worker-b', 10_000)]);
@@ -119,6 +136,18 @@ test('PostgreSQL durable ledger and fenced execution', { skip: databaseUrl ? fal
       await other.releaseRun(claimed.id, owner, claimed.fence);
       assert.equal((await store.getRun(claimed.id)).leaseOwner, 'replacement');
       await store.releaseRun(claimed.id, 'replacement', reclaimed.fence);
+    });
+
+    await t.test('implementation bindings persist across connections and cannot be rebound or removed', async () => {
+      const run = await store.createRun(input(project.id));
+      const binding = { version: 1 as const, executorIdentity: 'a'.repeat(64), toolSchemaHash: 'b'.repeat(64) };
+      const prepared = await store.mutateRun(run.id, { expectedRevision: run.revision }, next => {
+        next.steps.push({ id: 'bound-fixture', tool: 'test.write', effect: 'external-write', arguments: {}, binding, status: 'prepared', summary: 'Synthetic action only.' });
+      });
+      assert.deepEqual((await other.getRun(run.id)).steps[0].binding, binding);
+      await assert.rejects(store.mutateRun(run.id, { expectedRevision: prepared.revision }, next => { delete next.steps[0].binding; }), code('AGENT_VALIDATION'));
+      await assert.rejects(store.mutateRun(run.id, { expectedRevision: prepared.revision }, next => { next.steps[0].binding!.executorIdentity = 'c'.repeat(64); }), code('AGENT_VALIDATION'));
+      assert.deepEqual(await other.getRun(run.id), prepared);
     });
 
     await t.test('lease expiry cannot be resurrected and interrupted external writes pause without replay', async () => {
