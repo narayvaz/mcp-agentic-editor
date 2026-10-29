@@ -5,8 +5,9 @@ This candidate extends the current desktop release. It does not activate the bro
 Implemented:
 
 - Operator-only private checkpoint and offline restore verification for the current complete app, backend files, Electron chats/drafts and PostgreSQL ledger. The verifier never launches restored Studio state. Historical incomplete release recovery archives are excluded explicitly and preserved in place.
-- Optional immutable versioned delivery contracts. Completion requires matching successful artifact receipts, including distinct resources and requested languages. Contractless historical runs retain their existing behaviour.
+- Optional immutable versioned delivery contracts. Completion requires matching successful artifact receipts, including distinct resources and requested languages. New contractless runs retain generic completion under the protected workflow version.
 - Prepared-action binding to verified executable identity and tool schema. Changed or unidentified implementations cannot reuse prepared action authority. Stale waiting approvals are rejected visibly; historical results remain readable.
+- Workflow version 2 for new records, so code-only rollback to a version 1 binary refuses protected work. Unfinished version 1 records are retained and paused for reviewed replacement; they are never silently upgraded or executed by the new runtime.
 
 Validation on 28 October 2026:
 

@@ -236,6 +236,13 @@ export class AgentRuntime {
   private remaining(run: AgentRun, ctx: Owned): number { return Math.min(MAX_ACTIVE_MS, run.limits.maxActiveMs) - run.activeMs - Math.max(0, this.now() - ctx.accountedAt); }
   private executing(run: AgentRun): void { if (this.closing || run.status !== 'running' || run.pauseRequested || run.cancelRequested) throw conflict(); }
   private supported(run: AgentRun): boolean { return run.workflowVersion === AGENT_WORKFLOW_VERSION && run.policyVersion === 1 && supportedCompletionContract(run.completionContract); }
+  private unsupported(ctx: Owned): Promise<AgentRun> {
+    return this.mutate(ctx, 'run.version-unsupported', 'This retained workflow, policy or completion contract requires manual migration.', state => {
+      state.status = 'paused'; state.pauseRequested = true;
+      if (state.approval && ['pending', 'approved'].includes(state.approval.status)) state.approval.status = 'rejected';
+      state.summary = 'This retained workflow, policy or completion contract is unsupported. Review its saved work and start a new current-version task. No action was replayed.';
+    });
+  }
   private compatible(step: AgentStep): boolean {
     if (!this.bindingRequired && step.binding === undefined) return true;
     const expected = this.bindings.get(step.tool);
@@ -279,7 +286,7 @@ export class AgentRuntime {
         this.account(ctx, state); state.status = 'paused'; state.pauseRequested = true;
         state.summary = 'Execution was interrupted. Review the retained work before resuming.';
       }, undefined, this.closing);
-      if (!this.supported(claimed)) return await this.mutate(ctx, 'run.version-unsupported', 'This retained workflow, policy or completion contract requires manual migration.', state => { state.status = 'paused'; state.pauseRequested = true; state.summary = 'This retained workflow, policy or completion contract is unsupported. Start a current run after review.'; });
+      if (!this.supported(claimed)) return await this.unsupported(ctx);
       if (this.incompatible(claimed)) return await this.quarantine(ctx);
       let run = await this.mutate(ctx, 'run.started', 'Agent execution started.', state => {
         if (this.closing || !['queued', 'running'].includes(state.status) || state.pauseRequested || state.cancelRequested) throw conflict();
@@ -520,13 +527,14 @@ export class AgentRuntime {
     for (const run of runs) {
       if (this.closing) break;
       if (TERMINAL.has(run.status) || this.active.has(run.id) || (run.leaseUntil && Date.parse(run.leaseUntil) > this.now())) continue;
-      if (!['queued', 'running'].includes(run.status) && !this.incompatible(run)) continue;
+      if (!['queued', 'running'].includes(run.status) && this.supported(run) && !this.incompatible(run)) continue;
       const claimed = await this.store.claimRun(run.id, this.id(), this.ttl);
       if (!claimed) { recovered.push(await this.store.getRun(run.id)); continue; }
       const ctx = this.owned(claimed);
       try {
-        if (this.incompatible(claimed)) await this.quarantine(ctx);
-        else if (!this.supported(claimed) || claimed.status === 'running' || claimed.steps.some(step => step.status === 'running' || (step.status === 'prepared' && step.effect !== 'read' && !['pending', 'approved'].includes(claimed.approval?.status ?? '')))) {
+        if (!this.supported(claimed)) await this.unsupported(ctx);
+        else if (this.incompatible(claimed)) await this.quarantine(ctx);
+        else if (claimed.status === 'running' || claimed.steps.some(step => step.status === 'running' || (step.status === 'prepared' && step.effect !== 'read' && !['pending', 'approved'].includes(claimed.approval?.status ?? '')))) {
           await this.mutate(ctx, 'run.recovered', 'An interrupted run was paused without replaying retained actions.', state => {
             state.status = 'paused'; state.pauseRequested = true;
             for (const step of state.steps) if (step.status === 'running' || (step.status === 'prepared' && step.effect !== 'read' && !['pending', 'approved'].includes(state.approval?.status ?? ''))) step.status = 'uncertain';

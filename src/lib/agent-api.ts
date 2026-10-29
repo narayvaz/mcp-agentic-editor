@@ -1,4 +1,4 @@
-import type { AgentArtifact, AgentEvent, AgentProject, AgentRun, AgentRunInput, AgentSelection, AgentStep } from '../../shared/agent-contracts';
+import { AGENT_WORKFLOW_VERSION, type AgentArtifact, type AgentEvent, type AgentProject, type AgentRun, type AgentRunInput, type AgentSelection, type AgentStep } from '../../shared/agent-contracts';
 import { withReadDeadline } from '../../shared/deadline';
 import { jsonBody, request, type StorySelection } from './studio';
 
@@ -65,10 +65,12 @@ export function agentCanPause(run: AgentRun) {
   return (run.status === 'queued' || run.status === 'running') && !run.pauseRequested && !run.cancelRequested;
 }
 export function agentResumeIssue(run: AgentRun): string | undefined {
+  if (run.workflowVersion !== AGENT_WORKFLOW_VERSION || run.policyVersion !== 1) return 'This saved task uses an unsupported format. Review its retained work and start a new task.';
   if (run.status !== 'paused') return run.status === 'waiting-input' ? 'Answer the task using Send guidance below.' : 'Only a paused task can be resumed here.';
   if (run.cancelRequested) return 'This task has a stop request pending.';
   if (run.steps.some(step => step.status === 'uncertain' || step.status === 'running' || (step.status === 'failed' && step.effect !== 'read'))) return 'Inspect the failed or uncertain action receipt before starting a separate recovery task.';
   if (run.approval?.status === 'pending') return 'A pending action approval must be resolved first.';
+  if (run.approval?.status === 'rejected' && run.steps.some(step => step.status === 'prepared')) return 'This prepared action has no current approval. Review and redirect the task or start a new task.';
   return undefined;
 }
 export function agentCanResume(run: AgentRun) { return !agentResumeIssue(run); }
@@ -77,6 +79,7 @@ export function agentApprovalKey(run: AgentRun) {
 }
 /** UI guard only; the backend independently verifies the digest, grant, revision and expiry. */
 export function agentApprovalIssue(run: AgentRun, now = Date.now()): string | undefined {
+  if (run.workflowVersion !== AGENT_WORKFLOW_VERSION || run.policyVersion !== 1) return 'This saved task uses an unsupported format. Review its retained work and start a new task.';
   if (!['waiting-approval', 'paused'].includes(run.status) || !run.approval || run.approval.status !== 'pending') return 'This task has no pending approval.';
   const expiry = Date.parse(run.approval.expiresAt);
   if (!Number.isFinite(expiry) || expiry <= now) return 'This approval has expired or its expiry is invalid. Reject it or send new guidance for a fresh proposal.';

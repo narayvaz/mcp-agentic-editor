@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { AgentError, type AgentArtifact, type AgentCompletionContract, type AgentDecision, type AgentMutation, type AgentRun, type AgentTool } from '../shared/agent-contracts.ts';
+import { AGENT_WORKFLOW_VERSION, AgentError, type AgentArtifact, type AgentCompletionContract, type AgentDecision, type AgentMutation, type AgentRun, type AgentTool } from '../shared/agent-contracts.ts';
 import { assertAgentCompletionOutputs, supportedCompletionContract, validateAgentCompletionContract, validateRetainedCompletionContract } from '../server/agent-completion.ts';
 import { createPostgresAgentStore, validateAgentRunInput, validateAgentRunRecord } from '../server/agent-store.ts';
 import { AgentRuntime, canonicalActionDigest } from '../server/agent-runtime.ts';
@@ -52,10 +52,10 @@ test('invalid and unsupported new contracts fail before accessing an unavailable
   } finally { await store.close(); }
 });
 
-test('historical contractless runs still finish after a confirmed read', async () => {
+test('new contractless runs retain generic completion under the protected workflow version', async () => {
   const { store, run } = await fixture();
   const result = await new AgentRuntime(store, [tool()], sequence(action, finish)).start(run.id);
-  assert.equal(result.status, 'completed'); assert.equal(result.completionContract, undefined); assert.equal(result.workflowVersion, 1);
+  assert.equal(result.status, 'completed'); assert.equal(result.completionContract, undefined); assert.equal(result.workflowVersion, AGENT_WORKFLOW_VERSION); assert.equal(AGENT_WORKFLOW_VERSION, 2);
 });
 
 test('contracted reads cannot finish without the promised retained output', async () => {
@@ -149,7 +149,7 @@ test('contract survives waiting and a new runtime without repeating an already c
   assert.equal(result.status, 'completed'); assert.equal(calls, 1); assert.deepEqual(result.completionContract, contract());
 });
 
-test('approval digest binds opted-in delivery requirements while preserving the contractless digest', async () => {
+test('approval digest binds opted-in requirements and treats an absent contract consistently', async () => {
   const { run } = await fixture(); const step = { tool: 'qa.read', effect: 'read' as const, arguments: {} };
   const before = canonicalActionDigest(run, step);
   assert.equal(before, canonicalActionDigest({ ...run, completionContract: undefined }, step));
@@ -157,7 +157,7 @@ test('approval digest binds opted-in delivery requirements while preserving the 
   assert.notEqual(canonicalActionDigest({ ...run, completionContract: contract() }, step), canonicalActionDigest({ ...run, completionContract: contract(2) }, step));
 });
 
-test('the decider receives the immutable completion contract without changing old-run context', async () => {
+test('the decider receives the immutable completion contract without changing uncontracted context', async () => {
   const prompts: string[] = [];
   const decide = createAgentDecider(async prompt => { prompts.push(prompt); return JSON.stringify({ kind: 'ask', summary: 'Missing output capability.', question: 'Which supported output do you need?' }); });
   const { run } = await fixture(contract()); await decide(run, [], new AbortController().signal);

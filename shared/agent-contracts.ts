@@ -1,5 +1,7 @@
 /** Durable agent records. Retrieved content and model decisions never confer authority. */
-export const AGENT_WORKFLOW_VERSION = 1;
+// Version 2 requires readers to enforce output contracts and prepared-action bindings.
+// Version 1 binaries must refuse these records rather than silently ignore new authority fields.
+export const AGENT_WORKFLOW_VERSION = 2;
 export type AgentStatus = 'queued' | 'running' | 'waiting-approval' | 'waiting-input' | 'paused' | 'failed' | 'cancelled' | 'completed';
 export type AgentSelection = { kind: 'wordpress' | 'evidence'; id: string; siteId?: string; title: string; revision?: string | number; language?: string };
 export type AgentProject = { id: string; name: string; createdAt: string };

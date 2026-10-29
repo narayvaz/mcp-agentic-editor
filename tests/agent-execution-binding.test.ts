@@ -79,7 +79,7 @@ test('schema or effect changes cannot reuse approval under the same executable i
   }
 });
 
-test('legacy prepared action remains readable but cannot gain new implementation authority', async () => {
+test('an unbound prepared action remains readable but cannot gain implementation authority', async () => {
   const { store, run } = await fixture();
   const legacy = new AgentRuntime(store, [tool()], propose);
   const pending = await legacy.start(run.id);
@@ -89,6 +89,46 @@ test('legacy prepared action remains readable but cannot gain new implementation
   const retained = await store.getRun(run.id);
   assert.equal(retained.status, 'paused'); assert.equal(retained.steps[0].binding, undefined);
   assert.equal(retained.approval?.status, 'rejected');
+});
+
+test('legacy workflow records pause without model or tool calls and cannot resume in place', async () => {
+  for (const status of ['queued', 'waiting-input', 'waiting-approval'] as const) {
+    const { store, run } = await fixture(); let modelCalls = 0, effects = 0;
+    const legacy = store.records.get(run.id)!;
+    legacy.workflowVersion = 1; legacy.status = status;
+    if (status === 'waiting-approval') {
+      legacy.steps.push({ id: 'old-step', tool: 'fixture.write', effect: 'external-write', arguments: {}, status: 'prepared', summary: 'Legacy pending action.' });
+      legacy.approval = { id: 'old-approval', stepId: 'old-step', digest: canonicalActionDigest(legacy, legacy.steps[0]), status: 'pending', expiresAt: new Date(Date.now() + 60_000).toISOString(), summary: 'Legacy review.' };
+    }
+    const runtime = new AgentRuntime(store, [tool(async () => { effects++; return { summary: 'Must not execute.' }; })], async () => { modelCalls++; return finish; }, { executorIdentity: identity });
+    if (status === 'queued') await runtime.start(run.id);
+    else await runtime.recover();
+    const stopped = await store.getRun(run.id);
+    assert.equal(stopped.workflowVersion, 1); assert.equal(stopped.status, 'paused');
+    assert.match(stopped.summary, /start a new current-version task/);
+    assert.equal(modelCalls, 0); assert.equal(effects, 0);
+    if (status === 'waiting-approval') assert.equal(stopped.approval?.status, 'rejected');
+    await assert.rejects(runtime.resume(run.id), /unsupported implementations/);
+  }
+});
+
+test('completed legacy workflow history stays readable without being migrated or executed', async () => {
+  const { store, run } = await fixture();
+  const legacy = store.records.get(run.id)!;
+  legacy.workflowVersion = 1; legacy.status = 'completed'; legacy.summary = 'Historical result.';
+  const before = await store.getRun(run.id);
+  const runtime = new AgentRuntime(store, [tool()], async () => { throw new Error('No model call'); }, { executorIdentity: identity });
+  await runtime.recover();
+  assert.deepEqual(await runtime.start(run.id), before);
+});
+
+test('protected workflow identity cannot be weakened by a run mutation', async () => {
+  const { store, run } = await fixture();
+  assert.equal(run.workflowVersion, 2);
+  const claimed = (await store.claimRun(run.id, 'fixture-owner', 3000))!;
+  await assert.rejects(store.mutateRun(run.id, { lease: { owner: claimed.leaseOwner!, fence: claimed.fence } }, state => { state.workflowVersion = 1; }), /Immutable identity changed/);
+  assert.equal((await store.getRun(run.id)).workflowVersion, 2);
+  await store.releaseRun(run.id, claimed.leaseOwner!, claimed.fence);
 });
 
 test('missing production identity fails closed and binding is covered by the approval digest', async () => {

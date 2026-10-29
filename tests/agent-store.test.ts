@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
-import { AgentError, type AgentRunInput, type AgentStore } from '../shared/agent-contracts.ts';
+import { AGENT_WORKFLOW_VERSION, AgentError, type AgentRunInput, type AgentStore } from '../shared/agent-contracts.ts';
 import { createPostgresAgentStore, validateAgentRunInput, validateAgentRunRecord } from '../server/agent-store.ts';
 
 const input = (projectId: string = randomUUID()): AgentRunInput => ({ projectId, threadId: 'test-thread', instruction: 'Prepare a supervised evidence brief.', allowedTools: ['test.read', 'test.write'] });
@@ -65,6 +65,7 @@ test('PostgreSQL durable ledger and fenced execution', { skip: databaseUrl ? fal
     await t.test('creation survives a second connection and commits the initial event', async () => {
       const run = await store.createRun(input(project.id));
       assert.equal(run.revision, 1); assert.equal(run.status, 'queued'); assert.deepEqual(run.limits, { maxSteps: 20, maxActiveMs: 900_000 });
+      assert.equal(run.workflowVersion, AGENT_WORKFLOW_VERSION); assert.equal(AGENT_WORKFLOW_VERSION, 2);
       assert.deepEqual(await other.getRun(run.id), run);
       assert.deepEqual((await other.events(run.id)).map(event => [event.revision, event.type]), [[1, 'run.created']]);
       assert.ok((await other.listRuns(project.id)).some(item => item.id === run.id));
