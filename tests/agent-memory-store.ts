@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { AgentError, type AgentEvent, type AgentMutation, type AgentProject, type AgentRun, type AgentRunInput, type AgentStatus, type AgentStore } from '../shared/agent-contracts.ts';
+import { AGENT_WORKFLOW_VERSION, AgentError, type AgentEvent, type AgentMutation, type AgentProject, type AgentRun, type AgentRunInput, type AgentStatus, type AgentStore } from '../shared/agent-contracts.ts';
 
 const copy = <T>(value: T): T => structuredClone(value);
 const terminal = new Set(['completed', 'failed', 'cancelled']);
@@ -15,7 +15,7 @@ export class MemoryAgentStore implements AgentStore {
   async createProject(name: string) { const project = { id: randomUUID(), name, createdAt: new Date(this.now()).toISOString() }; this.projects.push(project); return copy(project); }
   async createRun(input: AgentRunInput) {
     const timestamp = new Date(this.now()).toISOString();
-    const run: AgentRun = { ...copy(input), id: randomUUID(), policyVersion: 1, workflowVersion: 1, status: 'queued', revision: 1,
+    const run: AgentRun = { ...copy(input), id: randomUUID(), policyVersion: 1, workflowVersion: AGENT_WORKFLOW_VERSION, status: 'queued', revision: 1,
       plan: [], steps: [], artifacts: [], summary: '', createdAt: timestamp, updatedAt: timestamp,
       limits: { maxSteps: 20, maxActiveMs: 900_000 }, activeMs: 0, cancelRequested: false, pauseRequested: false, fence: 0 };
     this.records.set(run.id, run); return copy(run);
@@ -32,9 +32,13 @@ export class MemoryAgentStore implements AgentStore {
     const run = await this.getRun(id);
     if (options.expectedRevision !== undefined && run.revision !== options.expectedRevision) throw new AgentError('Conflict.', 409, 'AGENT_CONFLICT');
     if (!options.lease || run.leaseOwner !== options.lease.owner || run.fence !== options.lease.fence || Date.parse(run.leaseUntil ?? '') <= this.now()) throw leaseLost();
-    const identity = JSON.stringify({ id: run.id, projectId: run.projectId, selection: run.selection, instruction: run.instruction, allowedTools: run.allowedTools, policyVersion: run.policyVersion });
+    const identity = JSON.stringify({ id: run.id, projectId: run.projectId, selection: run.selection, instruction: run.instruction, allowedTools: run.allowedTools, policyVersion: run.policyVersion, workflowVersion: run.workflowVersion, completionContract: run.completionContract });
     mutate(run);
-    if (identity !== JSON.stringify({ id: run.id, projectId: run.projectId, selection: run.selection, instruction: run.instruction, allowedTools: run.allowedTools, policyVersion: run.policyVersion })) throw new Error('Immutable identity changed.');
+    for (const [index, previous] of this.records.get(id)!.steps.entries()) {
+      const next = run.steps[index];
+      if (!next || JSON.stringify([previous.id, previous.tool, previous.arguments, previous.effect, previous.binding]) !== JSON.stringify([next.id, next.tool, next.arguments, next.effect, next.binding])) throw new AgentError('Retained action identity cannot change.', 400, 'AGENT_VALIDATION');
+    }
+    if (identity !== JSON.stringify({ id: run.id, projectId: run.projectId, selection: run.selection, instruction: run.instruction, allowedTools: run.allowedTools, policyVersion: run.policyVersion, workflowVersion: run.workflowVersion, completionContract: run.completionContract })) throw new Error('Immutable identity changed.');
     return this.save(run, options.event?.type ?? 'run.updated', options.event?.message);
   }
   async claimRun(id: string, owner: string, ttlMs: number) {

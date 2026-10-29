@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { AGENT_WORKFLOW_VERSION, AgentError, type AgentApproval, type AgentArtifact, type AgentDecision, type AgentDecider, type AgentRun, type AgentStep, type AgentStore, type AgentTool, type AgentToolResult } from '../shared/agent-contracts.ts';
 import { withReadDeadline } from '../shared/deadline.ts';
+import { assertAgentCompletionOutputs, supportedCompletionContract } from './agent-completion.ts';
+import { createAgentExecutionBinding, validAgentExecutionBinding, type AgentExecutionBinding } from './agent-executor-identity.ts';
 
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
 const MAX_STEPS = 20, MAX_ACTIVE_MS = 15 * 60_000, APPROVAL_MS = 15 * 60_000;
@@ -93,9 +95,10 @@ function canonical(value: unknown): string {
   if (plain(value)) return `{${Object.keys(value).filter(key => value[key] !== undefined).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`;
   return JSON.stringify(value);
 }
-export function canonicalActionDigest(run: Pick<AgentRun, 'id' | 'projectId' | 'selection' | 'policyVersion' | 'workflowVersion'>, action: Pick<AgentStep, 'tool' | 'effect' | 'arguments'>): string {
+export function canonicalActionDigest(run: Pick<AgentRun, 'id' | 'projectId' | 'selection' | 'policyVersion' | 'workflowVersion' | 'completionContract'>, action: Pick<AgentStep, 'tool' | 'effect' | 'arguments' | 'binding'>): string {
   return createHash('sha256').update(canonical({ runId: run.id, projectId: run.projectId, selection: run.selection ?? null, policyVersion: run.policyVersion, workflowVersion: run.workflowVersion,
-    action: { tool: action.tool, effect: action.effect, arguments: jsonInput(action.arguments) } })).digest('hex');
+    ...(run.completionContract !== undefined ? { completionContract: run.completionContract } : {}),
+    action: { tool: action.tool, effect: action.effect, arguments: jsonInput(action.arguments), ...(action.binding !== undefined ? { binding: action.binding } : {}) } })).digest('hex');
 }
 
 type OutputBounds = { truncated: boolean; nodes: number; characters: number };
@@ -132,6 +135,8 @@ function sanitizeResult(value: AgentToolResult): AgentToolResult & { dataTruncat
 export type AgentAuthorizationContext = { run: AgentRun; tool: AgentTool; arguments: Record<string, unknown>; actionId: string; digest: string; phase: 'prepare' | 'approve' | 'execute' };
 export type AgentRuntimeOptions = {
   authorize?: (context: AgentAuthorizationContext) => boolean | Promise<boolean>;
+  /** Captured once from the launcher's verified release. Mandatory in the installed service. */
+  executorIdentity?: string; requireExecutionBinding?: boolean;
   /** Dependency injection for deterministic, credential-free tests. Production defaults remain bounded. */
   now?: () => number; id?: () => string; leaseTtlMs?: number; heartbeatMs?: number; decisionTimeoutMs?: number;
 };
@@ -139,6 +144,8 @@ type Owned = { id: string; owner: string; fence: number; lost: boolean; stop: Ab
 
 export class AgentRuntime {
   private tools: Map<string, AgentTool>;
+  private bindings = new Map<string, AgentExecutionBinding>();
+  private bindingRequired: boolean;
   private active = new Map<string, Owned>();
   private starts = new Map<string, Promise<AgentRun>>();
   private tail: Promise<unknown> = Promise.resolve();
@@ -153,9 +160,17 @@ export class AgentRuntime {
   private heartbeatMs: number;
   constructor(private store: AgentStore, tools: AgentTool[], private decide: AgentDecider, private options: AgentRuntimeOptions = {}) {
     this.tools = new Map();
+    this.bindingRequired = options.requireExecutionBinding === true || options.executorIdentity !== undefined;
+    if (this.bindingRequired && !/^[a-f\d]{64}$/.test(options.executorIdentity ?? '')) throw new AgentError('Agent tasks require an identified, verified application build.', 503, 'AGENT_EXECUTOR_UNIDENTIFIED');
     for (const tool of tools) {
       if (!/^[a-z][a-z\d_.:-]{0,119}$/i.test(tool.name) || this.tools.has(tool.name) || !['read', 'local-write', 'external-write'].includes(tool.effect)) throw new AgentError('The agent tool registry is invalid.', 500, 'AGENT_TOOL_REGISTRY');
-      this.tools.set(tool.name, tool);
+      const snapshot = Object.freeze({ ...tool, inputSchema: clone(tool.inputSchema) });
+      this.tools.set(snapshot.name, snapshot);
+      if (this.bindingRequired) {
+        const binding = createAgentExecutionBinding(options.executorIdentity, snapshot);
+        if (!binding) throw new AgentError('The agent tool registry is invalid.', 500, 'AGENT_TOOL_REGISTRY');
+        this.bindings.set(snapshot.name, binding);
+      }
     }
     this.now = options.now ?? Date.now; this.id = options.id ?? randomUUID;
     this.ttl = Math.max(100, Math.min(options.leaseTtlMs ?? 30_000, 30_000));
@@ -220,9 +235,29 @@ export class AgentRuntime {
   }
   private remaining(run: AgentRun, ctx: Owned): number { return Math.min(MAX_ACTIVE_MS, run.limits.maxActiveMs) - run.activeMs - Math.max(0, this.now() - ctx.accountedAt); }
   private executing(run: AgentRun): void { if (this.closing || run.status !== 'running' || run.pauseRequested || run.cancelRequested) throw conflict(); }
-  private supported(run: AgentRun): boolean { return run.workflowVersion === AGENT_WORKFLOW_VERSION && run.policyVersion === 1; }
+  private supported(run: AgentRun): boolean { return run.workflowVersion === AGENT_WORKFLOW_VERSION && run.policyVersion === 1 && supportedCompletionContract(run.completionContract); }
+  private unsupported(ctx: Owned): Promise<AgentRun> {
+    return this.mutate(ctx, 'run.version-unsupported', 'This retained workflow, policy or completion contract requires manual migration.', state => {
+      state.status = 'paused'; state.pauseRequested = true;
+      if (state.approval && ['pending', 'approved'].includes(state.approval.status)) state.approval.status = 'rejected';
+      state.summary = 'This retained workflow, policy or completion contract is unsupported. Review its saved work and start a new current-version task. No action was replayed.';
+    });
+  }
+  private compatible(step: AgentStep): boolean {
+    if (!this.bindingRequired && step.binding === undefined) return true;
+    const expected = this.bindings.get(step.tool);
+    return !!expected && validAgentExecutionBinding(step.binding) && canonical(expected) === canonical(step.binding);
+  }
+  private incompatible(run: AgentRun): boolean { return run.steps.some(step => step.status === 'prepared' && !this.compatible(step)); }
+  private quarantine(ctx: Owned, expectedRevision?: number): Promise<AgentRun> {
+    return this.mutate(ctx, 'run.implementation-changed', 'Retained action authority does not match this application implementation.', state => {
+      state.status = 'paused'; state.pauseRequested = true;
+      if (state.approval && ['pending', 'approved'].includes(state.approval.status)) state.approval.status = 'rejected';
+      state.summary = 'A prepared action belongs to a different or unidentified implementation. Review and redirect this task or start a new task; no action was replayed.';
+    }, expectedRevision);
+  }
   private async authorize(run: AgentRun, step: AgentStep, phase: AgentAuthorizationContext['phase']): Promise<AgentTool> {
-    if (!this.supported(run)) throw denied();
+    if (!this.supported(run) || !this.compatible(step)) throw denied();
     const tool = this.tools.get(step.tool);
     if (!tool || !run.allowedTools.includes(step.tool) || step.effect !== tool.effect) throw denied();
     const arguments_ = jsonInput(tool.validate(clone(step.arguments)));
@@ -251,7 +286,8 @@ export class AgentRuntime {
         this.account(ctx, state); state.status = 'paused'; state.pauseRequested = true;
         state.summary = 'Execution was interrupted. Review the retained work before resuming.';
       }, undefined, this.closing);
-      if (!this.supported(claimed)) return await this.mutate(ctx, 'run.version-unsupported', 'This retained workflow or policy version requires manual migration.', state => { state.status = 'paused'; state.pauseRequested = true; state.summary = 'This retained workflow or policy version is unsupported. Start a current run after review.'; });
+      if (!this.supported(claimed)) return await this.unsupported(ctx);
+      if (this.incompatible(claimed)) return await this.quarantine(ctx);
       let run = await this.mutate(ctx, 'run.started', 'Agent execution started.', state => {
         if (this.closing || !['queued', 'running'].includes(state.status) || state.pauseRequested || state.cancelRequested) throw conflict();
         state.status = 'running';
@@ -278,19 +314,21 @@ export class AgentRuntime {
           return await this.mutate(ctx, 'run.input-required', 'The agent requested operator input.', state => { this.executing(state); this.account(ctx, state); state.status = 'waiting-input'; state.summary = decision.summary; state.question = decision.question; });
         } else if (decision.kind === 'finish') {
           if (!run.steps.some(step => step.status === 'succeeded') || run.steps.some(blocksCompletion)) throw new AgentError('Completion requires successful tool evidence with no unresolved action.', 409, 'AGENT_COMPLETION_INVALID');
+          assertAgentCompletionOutputs(run);
           return await this.mutate(ctx, 'run.completed', 'Agent work completed with retained tool receipts.', state => {
             this.executing(state);
             if (!state.steps.some(step => step.status === 'succeeded') || state.steps.some(blocksCompletion)) throw new AgentError('Completion requires successful tool evidence with no unresolved action.', 409, 'AGENT_COMPLETION_INVALID');
+            assertAgentCompletionOutputs(state);
             this.account(ctx, state); state.status = 'completed'; state.summary = decision.summary; delete state.question;
           });
         } else {
           consecutivePlans = 0;
           if (run.steps.length >= Math.min(MAX_STEPS, run.limits.maxSteps)) throw new AgentError('The run reached its step limit.', 409, 'AGENT_LIMIT');
           const tool = this.tools.get(decision.tool); if (!tool || !run.allowedTools.includes(tool.name)) throw denied();
-          const step: AgentStep = { id: this.id(), tool: tool.name, arguments: jsonInput(tool.validate(decision.arguments)), effect: tool.effect, status: 'prepared', summary: decision.summary };
+          const step: AgentStep = { id: this.id(), tool: tool.name, arguments: jsonInput(tool.validate(decision.arguments)), effect: tool.effect, ...(this.bindings.has(tool.name) ? { binding: clone(this.bindings.get(tool.name)!) } : {}), status: 'prepared', summary: decision.summary };
           await this.operation(ctx, Math.min(this.remaining(run, ctx), 30_000), async () => this.authorize(run, step, 'prepare'));
           const digest = canonicalActionDigest(run, step);
-          if (step.effect !== 'read' && run.steps.some(prior => prior.effect !== 'read' && prior.status !== 'superseded' && canonicalActionDigest(run, prior) === digest)) throw new AgentError('This write action is already retained. It will not be repeated automatically.', 409, 'AGENT_REPLAY_BLOCKED');
+          if (step.effect !== 'read' && run.steps.some(prior => prior.effect !== 'read' && prior.status !== 'superseded' && canonicalActionDigest(run, { ...prior, binding: undefined }) === canonicalActionDigest(run, { ...step, binding: undefined }))) throw new AgentError('This write action is already retained. It will not be repeated automatically.', 409, 'AGENT_REPLAY_BLOCKED');
           const approval: AgentApproval | undefined = step.effect === 'external-write' ? { id: this.id(), stepId: step.id, digest, expiresAt: new Date(this.now() + APPROVAL_MS).toISOString(), status: 'pending', summary: step.summary } : undefined;
           if (approval) step.result = { approval: clone(approval) };
           if (Buffer.byteLength(JSON.stringify({ ...run, steps: [...run.steps, step] }), 'utf8') > 800_000) throw new AgentError('The run reached its retained data limit.', 409, 'AGENT_LIMIT');
@@ -350,7 +388,7 @@ export class AgentRuntime {
           const retained = state.steps.find(item => item.id === step.id);
           if (this.closing || !retained || retained.status !== 'running' || state.status !== 'running' || state.pauseRequested || state.cancelRequested) return;
           this.account(ctx, state); retained.status = 'succeeded'; retained.summary = result.summary; retained.finishedAt = new Date(this.now()).toISOString();
-          retained.result = { ...(step.effect === 'external-write' ? { approval: clone(state.approval) } : {}), ...(result.data !== undefined ? { data: result.data } : {}), ...(result.dataTruncated ? { dataTruncated: true } : {}) };
+          retained.result = { ...(step.effect === 'external-write' ? { approval: clone(state.approval) } : {}), ...(result.data !== undefined ? { data: result.data } : {}), ...(result.dataTruncated ? { dataTruncated: true } : {}), ...(result.artifacts?.length ? { artifacts: clone(result.artifacts) } : {}) };
           for (const artifact of result.artifacts ?? []) if (!state.artifacts.some(item => item.id === artifact.id)) state.artifacts.push(artifact);
         });
       } catch (error) { throw error; }
@@ -412,7 +450,7 @@ export class AgentRuntime {
   }
   async resume(id: string, expectedRevision?: number): Promise<AgentRun> {
     return this.control(id, (ctx, revision) => this.mutate(ctx, 'run.resumed', 'The operator resumed this run.', state => {
-      if (!this.supported(state) || !['paused', 'waiting-input'].includes(state.status) || state.cancelRequested || state.steps.some(requiresReconciliation)) throw conflict('This run cannot resume until unresolved actions or unsupported versions are reconciled. Start a new run after review.');
+      if (!this.supported(state) || this.incompatible(state) || !['paused', 'waiting-input'].includes(state.status) || state.cancelRequested || state.steps.some(requiresReconciliation)) throw conflict('This run cannot resume until unresolved actions or unsupported implementations are reviewed. Redirect superseded work or start a new run.');
       state.pauseRequested = false; delete state.question;
       state.status = state.approval?.status === 'pending' && state.steps.some(step => step.id === state.approval?.stepId && step.status === 'prepared') ? 'waiting-approval' : 'queued';
     }, revision), expectedRevision);
@@ -439,6 +477,7 @@ export class AgentRuntime {
     return this.control(id, async (ctx, revision) => {
       const run = await this.store.getRun(id), step = run.steps.find(item => item.id === run.approval?.stepId);
       if (!step || !run.approval || run.approval.id !== approvalId || run.approval.digest !== digest || canonicalActionDigest(run, step) !== digest || run.approval.status !== 'pending' || step.status !== 'prepared' || Date.parse(run.approval.expiresAt) <= this.now() || run.cancelRequested || !['waiting-approval', 'paused'].includes(run.status)) throw new AgentError('The exact approval is missing, changed, consumed, or expired.', 409, 'AGENT_APPROVAL_INVALID');
+      if (!this.compatible(step)) return this.quarantine(ctx, revision);
       await this.operation(ctx, 30_000, async () => this.authorize(run, step, 'approve'));
       return this.mutate(ctx, 'approval.approved', 'The operator approved this exact action and scope.', state => {
         if (state.approval?.id !== approvalId || state.approval.status !== 'pending' || state.steps.find(item => item.id === step.id)?.status !== 'prepared' || Date.parse(state.approval.expiresAt) <= this.now()) throw conflict();
@@ -484,15 +523,18 @@ export class AgentRuntime {
   /** Recovery only reconciles interruption state. It never executes a retained action. */
   async recover(runningOnly = false): Promise<AgentRun[]> {
     if (this.closing) return [];
-    const runs = await this.store.listRuns(undefined, runningOnly ? ['running'] : ['queued', 'running']), recovered: AgentRun[] = [];
+    const runs = await this.store.listRuns(undefined, runningOnly ? ['running'] : ['queued', 'running', 'waiting-approval', 'paused', 'waiting-input']), recovered: AgentRun[] = [];
     for (const run of runs) {
       if (this.closing) break;
       if (TERMINAL.has(run.status) || this.active.has(run.id) || (run.leaseUntil && Date.parse(run.leaseUntil) > this.now())) continue;
+      if (!['queued', 'running'].includes(run.status) && this.supported(run) && !this.incompatible(run)) continue;
       const claimed = await this.store.claimRun(run.id, this.id(), this.ttl);
       if (!claimed) { recovered.push(await this.store.getRun(run.id)); continue; }
       const ctx = this.owned(claimed);
       try {
-        if (!this.supported(claimed) || claimed.status === 'running' || claimed.steps.some(step => step.status === 'running' || (step.status === 'prepared' && step.effect !== 'read' && !['pending', 'approved'].includes(claimed.approval?.status ?? '')))) {
+        if (!this.supported(claimed)) await this.unsupported(ctx);
+        else if (this.incompatible(claimed)) await this.quarantine(ctx);
+        else if (claimed.status === 'running' || claimed.steps.some(step => step.status === 'running' || (step.status === 'prepared' && step.effect !== 'read' && !['pending', 'approved'].includes(claimed.approval?.status ?? '')))) {
           await this.mutate(ctx, 'run.recovered', 'An interrupted run was paused without replaying retained actions.', state => {
             state.status = 'paused'; state.pauseRequested = true;
             for (const step of state.steps) if (step.status === 'running' || (step.status === 'prepared' && step.effect !== 'read' && !['pending', 'approved'].includes(state.approval?.status ?? ''))) step.status = 'uncertain';

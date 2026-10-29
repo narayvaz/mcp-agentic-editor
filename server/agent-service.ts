@@ -6,6 +6,7 @@ import { withReadDeadline } from '../shared/deadline';
 
 export type AgentServiceOptions = {
   databaseUrl: () => string; tools: AgentTool[]; decide: AgentDecider;
+  executorIdentity?: string; requireExecutionBinding?: boolean;
   authorize?: (context: AgentAuthorizationContext) => boolean | Promise<boolean>;
   validateInput?: (input: AgentRunInput) => AgentRunInput;
   modelConfigured?: () => boolean;
@@ -27,13 +28,14 @@ export function registerAgentRuntimeRoutes(app: Express, options: AgentServiceOp
   const active = new Set<string>();
   async function ready() {
     if (closing || !options.databaseUrl()) throw new AgentError('Agent tasks need a configured PostgreSQL connection. Existing chat and editing remain available.', 503, 'AGENT_NOT_CONFIGURED');
+    if (options.requireExecutionBinding && !/^[a-f\d]{64}$/.test(options.executorIdentity ?? '')) throw new AgentError('Agent tasks require an identified, verified application build. Existing chat and editing remain available.', 503, 'AGENT_EXECUTOR_UNIDENTIFIED');
     if (!service) service = (async () => {
       const store = (options.storeFactory ?? createPostgresAgentStore)(options.databaseUrl());
       currentStore = store;
       try {
         await store.initialize();
         if (closing) throw new AgentError('Agent tasks are stopping.', 503, 'AGENT_NOT_CONFIGURED');
-        const runtime = new AgentRuntime(store, options.tools, options.decide, { authorize: options.authorize });
+        const runtime = new AgentRuntime(store, options.tools, options.decide, { authorize: options.authorize, executorIdentity: options.executorIdentity, requireExecutionBinding: options.requireExecutionBinding });
         currentRuntime = runtime;
         await runtime.recover();
         if (closing) throw new AgentError('Agent tasks are stopping.', 503, 'AGENT_NOT_CONFIGURED');

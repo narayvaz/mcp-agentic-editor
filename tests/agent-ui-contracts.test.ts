@@ -10,7 +10,7 @@ const now = Date.parse('2026-10-22T10:00:00Z');
 function run(patch: Partial<AgentRun> = {}): AgentRun {
   return {
     id: 'run-a', projectId: 'project-a', threadId: 'thread-a', instruction: 'Review the attached evidence',
-    allowedTools: ['wordpress.edit'], policyVersion: 1, workflowVersion: 1, status: 'waiting-approval', revision: 8,
+    allowedTools: ['wordpress.edit'], policyVersion: 1, workflowVersion: 2, status: 'waiting-approval', revision: 8,
     plan: [], artifacts: [], summary: '', createdAt: '2026-10-22T09:00:00Z', updatedAt: '2026-10-22T10:00:00Z',
     steps: [{ id: 'step-a', tool: 'wordpress.edit', arguments: { postId: '12', expectedRevision: 'source-revision', title: 'Exact title' },
       effect: 'external-write', status: 'prepared', summary: 'Save the reviewed title' }],
@@ -74,6 +74,18 @@ test('a failed read can resume while an unresolved write stays blocked', () => {
   const step = { ...run().steps[0], status: 'failed' as const };
   assert.equal(agentCanResume(run({ status: 'paused', approval: undefined, steps: [{ ...step, effect: 'read' }] })), true);
   assert.equal(agentCanResume(run({ status: 'paused', approval: undefined, steps: [{ ...step, effect: 'local-write' }] })), false);
+});
+
+test('legacy and future task formats cannot offer resume or approval controls', () => {
+  for (const patch of [{ workflowVersion: 1 }, { workflowVersion: 3 }, { policyVersion: 2 }]) {
+    assert.equal(agentCanResume(run({ status: 'paused', approval: undefined, steps: [], ...patch })), false);
+    assert.match(agentApprovalIssue(run(patch), now)!, /unsupported format/);
+  }
+});
+
+test('a quarantined prepared action with rejected authority cannot offer resume', () => {
+  const current = run();
+  assert.equal(agentCanResume(run({ status: 'paused', approval: { ...current.approval!, status: 'rejected' } })), false);
 });
 
 test('retained briefs and reports select their evidence record; WordPress requires an edition', () => {

@@ -30,7 +30,7 @@ test('canonical digest is stable but binds action, project, run, selection and p
   const { run } = await fixture(); const step = { tool: 'read', effect: 'read' as const, arguments: { b: 2, a: { d: 4, c: 3 } } };
   const digest = canonicalActionDigest(run, step);
   assert.equal(digest, canonicalActionDigest(run, { ...step, arguments: { a: { c: 3, d: 4 }, b: 2 } }));
-  for (const replacement of [{ id: 'other-run' }, { projectId: 'other-project' }, { policyVersion: 2 }, { workflowVersion: 2 }, { selection: { ...run.selection!, revision: 2 } }]) assert.notEqual(digest, canonicalActionDigest({ ...run, ...replacement }, step));
+  for (const replacement of [{ id: 'other-run' }, { projectId: 'other-project' }, { policyVersion: 2 }, { workflowVersion: 3 }, { selection: { ...run.selection!, revision: 2 } }]) assert.notEqual(digest, canonicalActionDigest({ ...run, ...replacement }, step));
   assert.notEqual(digest, canonicalActionDigest(run, { ...step, arguments: { b: 3 } }));
 });
 

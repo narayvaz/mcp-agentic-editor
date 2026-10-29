@@ -10,6 +10,7 @@ import { registerEvidenceRoutes } from "./server/evidence";
 import { registerObservationRoutes, observeProduction } from "./server/observation";
 import { registerWordPressEditRoutes, createWordPressEditor } from "./server/wordpress-edit";
 import { registerAgentRuntimeRoutes } from "./server/agent-service";
+import { createAgentExecutorIdentity } from "./server/agent-executor-identity";
 import { registerVoiceRoutes } from "./server/voice-service";
 import { createVoiceTaskBridge } from "./server/voice-task-bridge";
 import { createStudioAgentTools } from "./server/agent-tools";
@@ -1392,7 +1393,10 @@ async function startServer() {
     },
     production: async signal => { signal.throwIfAborted(); const config = readConfig(); const value = await observeProduction({ ...config, vps: await resolveVpsConfig(config.vps) }); signal.throwIfAborted(); return value; },
   });
+  // Capture verified package identity once; a later manifest read cannot rebind approval authority.
+  const agentExecutorIdentity = createAgentExecutorIdentity(getRuntimeIdentity(runtimeRoot));
   agentRuntimeService = registerAgentRuntimeRoutes(app, {
+    executorIdentity: agentExecutorIdentity, requireExecutionBinding: true,
     databaseUrl: () => {
       if (process.env.AZAT_AGENT_DATABASE_URL) return process.env.AZAT_AGENT_DATABASE_URL;
       try {
